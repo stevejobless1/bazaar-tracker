@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start:tracker": "node dist/tracker.js",
+    "start:api": "node dist/server.js",
+    "start:downsampler": "node dist/downsampler.js"
   },
   "keywords": [],
   "author": "",
