@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # The Data Collector
+  tracker:
+    build: .
+    command: npx ts-node src/tracker.ts
+    volumes:
+      - bazaar-data:/app/data
+    environment:
+      - DB_PATH=/app/data/bazaar.db
+    restart: always
+
+  # The REST API
+  api:
+    build: .
+    command: npx ts-node src/server.ts
+    ports:
+      - "3000:3000"
+    volumes:
+      - bazaar-data:/app/data
+    environment:
+      - DB_PATH=/app/data/bazaar.db
+      - PORT=3000
+    restart: always
+
+  # The Daily Downsampler
+  downsampler:
+    build: .
+    command: npx ts-node src/downsampler.ts
+    volumes:
+      - bazaar-data:/app/data
+    environment:
+      - DB_PATH=/app/data/bazaar.db
+    restart: always
+
+volumes:
+  bazaar-data:
