@@ -5,6 +5,11 @@ import { getLastRecordedPrices, getRecentHistory, getHourlyHistory } from './db'
 const app = express();
 app.use(cors());
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
 // Get the latest known state of all bazaar items
 app.get('/api/bazaar', (req, res) => {
   try {
