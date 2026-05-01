@@ -4,7 +4,7 @@ services:
   # The Data Collector
   tracker:
     build: .
-    command: tail -f /dev/null
+    command: npm run start:tracker
     volumes:
       - bazaar-data:/app/data
     environment:
@@ -14,7 +14,7 @@ services:
   # The REST API
   api:
     build: .
-    command: tail -f /dev/null
+    command: npm run start:api
     ports:
       - "3000:3000"
     volumes:
@@ -27,7 +27,7 @@ services:
   # The Daily Downsampler
   downsampler:
     build: .
-    command: tail -f /dev/null
+    command: npm run start:downsampler
     volumes:
       - bazaar-data:/app/data
     environment:
