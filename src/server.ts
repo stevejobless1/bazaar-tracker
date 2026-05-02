@@ -1,9 +1,18 @@
 import express from 'express';
 import cors from 'cors';
-import { getLastRecordedPrices, getRecentHistory, getHourlyHistory, getLiveOrders, getStatusStats } from './db';
+import compression from 'compression';
+import { 
+  getLastRecordedPrices, 
+  getRecentHistory, 
+  getFiveMinHistory, 
+  getHourlyHistory, 
+  getLiveOrders, 
+  getStatusStats 
+} from './db';
 
 const app = express();
 app.use(cors());
+app.use(compression());
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -40,16 +49,19 @@ app.get('/api/bazaar', (req, res) => {
 app.get('/api/bazaar/history/:productId', (req, res) => {
   try {
     const productId = req.params.productId;
-    // Query param to specify if we want hourly candles or high-res raw data
-    const useHourly = req.query.hourly === 'true';
+    // Query param to specify resolution: 'raw', '5m', or '1h' (defaults to 'raw')
+    const resolution = req.query.resolution as string || (req.query.hourly === 'true' ? '1h' : 'raw');
     const limit = parseInt(req.query.limit as string) || 1000;
 
-    if (useHourly) {
+    if (resolution === '1h') {
       const history = getHourlyHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: 'hourly', data: history });
+      res.json({ success: true, product_id: productId, resolution: '1h', data: history });
+    } else if (resolution === '5m') {
+      const history = getFiveMinHistory(productId, limit);
+      res.json({ success: true, product_id: productId, resolution: '5m', data: history });
     } else {
       const history = getRecentHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: 'high', data: history });
+      res.json({ success: true, product_id: productId, resolution: 'raw', data: history });
     }
   } catch (err) {
     console.error(err);

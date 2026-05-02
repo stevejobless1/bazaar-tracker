@@ -61,6 +61,30 @@ export function initDB() {
     -- Indexes for the hourly table
     CREATE INDEX IF NOT EXISTS idx_hourly_prices_product_time ON hourly_prices(product_id, timestamp);
 
+    CREATE TABLE IF NOT EXISTS five_min_prices (
+      timestamp INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      buy_open REAL,
+      buy_high REAL,
+      buy_low REAL,
+      buy_close REAL,
+      sell_open REAL,
+      sell_high REAL,
+      sell_low REAL,
+      sell_close REAL,
+      avg_buy_volume INTEGER,
+      avg_sell_volume INTEGER,
+      avg_buy_orders INTEGER,
+      avg_sell_orders INTEGER,
+      avg_buy_moving_week INTEGER,
+      avg_sell_moving_week INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      UNIQUE(product_id, timestamp)
+    );
+
+    -- Indexes for the 5-minute table
+    CREATE INDEX IF NOT EXISTS idx_five_min_prices_product_time ON five_min_prices(product_id, timestamp);
+
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id INTEGER PRIMARY KEY,
       buy_summary TEXT,
@@ -92,6 +116,14 @@ const getLastPriceStmt = db.prepare(`
 
 const insertHourlyPriceStmt = db.prepare(`
   INSERT OR REPLACE INTO hourly_prices (
+    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
+    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
+    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertFiveMinPriceStmt = db.prepare(`
+  INSERT OR REPLACE INTO five_min_prices (
     timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
     sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
     avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
@@ -183,9 +215,31 @@ export function deleteRawPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM prices WHERE timestamp < ?').run(timestampMs);
 }
 
+export function getFiveMinPricesOlderThan(timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM five_min_prices WHERE timestamp < ?').all(timestampMs);
+}
+
+export function deleteFiveMinPricesOlderThan(timestampMs: number) {
+  db.prepare('DELETE FROM five_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
 export const bulkInsertHourlyPrices = db.transaction((hourlyData: any[]) => {
   for (const d of hourlyData) {
     insertHourlyPriceStmt.run(
+      d.timestamp,
+      d.product_id,
+      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
+      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
+      d.avg_buy_volume, d.avg_sell_volume,
+      d.avg_buy_orders, d.avg_sell_orders,
+      d.avg_buy_moving_week, d.avg_sell_moving_week
+    );
+  }
+});
+
+export const bulkInsertFiveMinPrices = db.transaction((data: any[]) => {
+  for (const d of data) {
+    insertFiveMinPriceStmt.run(
       d.timestamp,
       d.product_id,
       d.buy_open, d.buy_high, d.buy_low, d.buy_close,
@@ -205,6 +259,11 @@ export function getRecentHistory(productIdStr: string, limit: number = 1000) {
 export function getHourlyHistory(productIdStr: string, limit: number = 1000) {
   const pId = getOrCreateProductId(productIdStr);
   return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
+}
+
+export function getFiveMinHistory(productIdStr: string, limit: number = 1000) {
+  const pId = getOrCreateProductId(productIdStr);
+  return db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
 }
 
 export interface LiveOrderSummaries {
@@ -232,7 +291,20 @@ export function getLiveOrders(productIdStr: string): any {
 
 // --- STATUS / ANALYTICS FUNCTIONS ---
 
-export function getStatusStats() {
+let cachedStats: any = null;
+let lastStatsFetch = 0;
+const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+export function getStatusStats(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedStats && (now - lastStatsFetch < STATS_CACHE_TTL)) {
+    return {
+      ...cachedStats,
+      cached: true,
+      cacheAgeMs: now - lastStatsFetch
+    };
+  }
+
   // Database file size info from SQLite internals
   const pageCountRow = db.prepare('PRAGMA page_count').get() as any;
   const pageSizeRow = db.prepare('PRAGMA page_size').get() as any;
@@ -301,7 +373,7 @@ export function getStatusStats() {
 
   const avgMargin = lastPrices.size > 0 ? totalMargin / lastPrices.size : 0;
 
-  return {
+  const stats = {
     database: {
       sizeBytes: dbSizeBytes,
       sizeMB: +(dbSizeBytes / (1024 * 1024)).toFixed(2),
@@ -309,6 +381,11 @@ export function getStatusStats() {
       pageSize,
       tables: {
         prices: { rows: pricesCount, oldestTimestamp: oldestPrice, newestTimestamp: newestPrice },
+        five_min_prices: { 
+          rows: (db.prepare('SELECT COUNT(*) as cnt FROM five_min_prices').get() as any)?.cnt || 0,
+          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null,
+          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null
+        },
         hourly_prices: { rows: hourlyCount, oldestTimestamp: oldestHourly, newestTimestamp: newestHourly },
         products: { rows: productsCount },
         live_orders: { rows: liveOrdersCount }
@@ -332,6 +409,10 @@ export function getStatusStats() {
       uptimeMs: Date.now() - serverStartTime
     }
   };
+
+  cachedStats = stats;
+  lastStatsFetch = now;
+  return { ...stats, cached: false };
 }
 
 // Track when this module was first loaded (proxy for server start)
