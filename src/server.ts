@@ -7,7 +7,8 @@ import {
   getFiveMinHistory, 
   getHourlyHistory, 
   getLiveOrders, 
-  getStatusStats 
+  getStatusStats,
+  logHeartbeat
 } from './db';
 
 const app = express();
@@ -97,7 +98,11 @@ app.get('/api/status', (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);
+  
+  // Log heartbeat for status page every minute
+  setInterval(() => logHeartbeat('api'), 60000);
+  logHeartbeat('api');
 });
+

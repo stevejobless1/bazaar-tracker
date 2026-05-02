@@ -4,7 +4,9 @@ import {
   getFiveMinPricesOlderThan,
   deleteFiveMinPricesOlderThan,
   bulkInsertFiveMinPrices,
-  bulkInsertHourlyPrices 
+  bulkInsertHourlyPrices,
+  vacuumDB,
+  logHeartbeat
 } from './db';
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
@@ -134,7 +136,12 @@ export function runDownsampler() {
   } else {
     console.log('[Downsampler] Tier 2: No 5m data older than 7 days.');
   }
+
+  // Optimize database after cleaning up
+  vacuumDB();
+  logHeartbeat('downsampler');
 }
+
 
 export function scheduleDownsampler() {
   runDownsampler();

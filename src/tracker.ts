@@ -4,6 +4,7 @@ import {
   getLastRecordedPrices, 
   bulkInsertPrices, 
   bulkUpsertLiveOrders,
+  logHeartbeat,
   LiveOrderSummaries,
   ProductPrice 
 } from './db';
@@ -141,6 +142,9 @@ async function runTracker() {
         console.error('[Tracker] DB Live Orders Insert Error:', err);
       }
     }
+
+    // Log heartbeat for status page
+    logHeartbeat('tracker');
   };
 
   // Run immediately, then interval

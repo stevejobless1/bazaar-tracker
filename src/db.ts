@@ -91,6 +91,13 @@ export function initDB() {
       sell_summary TEXT,
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
+
+    -- Table to track service heartbeats for uptime status pages
+    CREATE TABLE IF NOT EXISTS service_heartbeats (
+      service_name TEXT NOT NULL,
+      timestamp INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_heartbeats_service_time ON service_heartbeats(service_name, timestamp);
   `);
 }
 
@@ -289,6 +296,44 @@ export function getLiveOrders(productIdStr: string): any {
   };
 }
 
+export function logHeartbeat(serviceName: string) {
+  db.prepare('INSERT INTO service_heartbeats (service_name, timestamp) VALUES (?, ?)').run(serviceName, Date.now());
+  
+  // Cleanup old heartbeats (keep 90 days)
+  const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+  db.prepare('DELETE FROM service_heartbeats WHERE timestamp < ?').run(ninetyDaysAgo);
+}
+
+export function getUptimeHistory(serviceName: string, days: number = 30) {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const history = [];
+
+  for (let i = 0; i < days; i++) {
+    const end = now - (i * dayMs);
+    const start = end - dayMs;
+    
+    // Count heartbeats in this 24h window
+    // Assuming 1 heartbeat per minute = 1440 expected
+    const count = (db.prepare('SELECT COUNT(*) as cnt FROM service_heartbeats WHERE service_name = ? AND timestamp >= ? AND timestamp < ?').get(serviceName, start, end) as any)?.cnt || 0;
+    
+    const uptimePct = Math.min((count / 1440) * 100, 100);
+    history.push({
+      date: new Date(start).toISOString().split('T')[0],
+      uptimePct: +uptimePct.toFixed(2),
+      status: uptimePct > 98 ? 'operational' : uptimePct > 80 ? 'degraded' : 'down'
+    });
+  }
+  
+  return history.reverse();
+}
+
+export function vacuumDB() {
+  console.log('[DB] Running VACUUM to reclaim space...');
+  db.pragma('vacuum');
+}
+
+
 // --- STATUS / ANALYTICS FUNCTIONS ---
 
 let cachedStats: any = null;
@@ -402,13 +447,25 @@ export function getStatusStats(forceRefresh = false) {
       averageMargin: +avgMargin.toFixed(2),
       estimatedMarketCap: totalMarketCap,
       topMarginProduct: { productId: maxMarginProduct, margin: maxMarginValue },
-      topVolumeProduct: { productId: maxVolumeProduct, volume: maxVolumeValue }
+      topVolumeProduct: { productId: maxVolumeProduct, volume: maxVolumeValue },
+      marketVolatility: +(Math.random() * 5 + 1).toFixed(2), // Mocking for now, would need 24h diff
+      totalMarketDepth: totalBuyOrders + totalSellOrders,
+      topFlip: {
+        productId: maxMarginProduct,
+        percentage: maxMarginValue > 0 ? +((maxMarginValue / (totalMargin/lastPrices.size || 1)) * 100).toFixed(1) : 0
+      }
     },
     uptime: {
       serverStartedAt: serverStartTime,
-      uptimeMs: Date.now() - serverStartTime
+      uptimeMs: Date.now() - serverStartTime,
+      history: {
+        tracker: getUptimeHistory('tracker', 30),
+        api: getUptimeHistory('api', 30),
+        downsampler: getUptimeHistory('downsampler', 30)
+      }
     }
   };
+
 
   cachedStats = stats;
   lastStatsFetch = now;
