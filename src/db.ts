@@ -60,6 +60,13 @@ export function initDB() {
 
     -- Indexes for the hourly table
     CREATE INDEX IF NOT EXISTS idx_hourly_prices_product_time ON hourly_prices(product_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS live_orders (
+      product_id INTEGER PRIMARY KEY,
+      buy_summary TEXT,
+      sell_summary TEXT,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
   `);
 }
 
@@ -89,6 +96,15 @@ const insertHourlyPriceStmt = db.prepare(`
     sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
     avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const upsertLiveOrdersStmt = db.prepare(`
+  INSERT OR REPLACE INTO live_orders (product_id, buy_summary, sell_summary)
+  VALUES (?, ?, ?)
+`);
+
+const getLiveOrdersStmt = db.prepare(`
+  SELECT buy_summary, sell_summary FROM live_orders WHERE product_id = ?
 `);
 
 // --- DB HELPER FUNCTIONS ---
@@ -190,5 +206,135 @@ export function getHourlyHistory(productIdStr: string, limit: number = 1000) {
   const pId = getOrCreateProductId(productIdStr);
   return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
 }
+
+export interface LiveOrderSummaries {
+  productId: string;
+  buySummary: string; // JSON string
+  sellSummary: string; // JSON string
+}
+
+export const bulkUpsertLiveOrders = db.transaction((orders: LiveOrderSummaries[]) => {
+  for (const o of orders) {
+    const pId = getOrCreateProductId(o.productId);
+    upsertLiveOrdersStmt.run(pId, o.buySummary, o.sellSummary);
+  }
+});
+
+export function getLiveOrders(productIdStr: string): any {
+  const pId = getOrCreateProductId(productIdStr);
+  const row = getLiveOrdersStmt.get(pId) as any;
+  if (!row) return null;
+  return {
+    buy_summary: JSON.parse(row.buy_summary),
+    sell_summary: JSON.parse(row.sell_summary)
+  };
+}
+
+// --- STATUS / ANALYTICS FUNCTIONS ---
+
+export function getStatusStats() {
+  // Database file size info from SQLite internals
+  const pageCountRow = db.prepare('PRAGMA page_count').get() as any;
+  const pageSizeRow = db.prepare('PRAGMA page_size').get() as any;
+  const pageCount = pageCountRow?.page_count || 0;
+  const pageSize = pageSizeRow?.page_size || 0;
+  const dbSizeBytes = pageCount * pageSize;
+
+  // WAL size
+  const walPageCountRow = db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as any;
+
+  // Row counts
+  const pricesCount = (db.prepare('SELECT COUNT(*) as cnt FROM prices').get() as any)?.cnt || 0;
+  const hourlyCount = (db.prepare('SELECT COUNT(*) as cnt FROM hourly_prices').get() as any)?.cnt || 0;
+  const productsCount = (db.prepare('SELECT COUNT(*) as cnt FROM products').get() as any)?.cnt || 0;
+  const liveOrdersCount = (db.prepare('SELECT COUNT(*) as cnt FROM live_orders').get() as any)?.cnt || 0;
+
+  // Oldest and newest timestamps
+  const oldestPrice = (db.prepare('SELECT MIN(timestamp) as ts FROM prices').get() as any)?.ts || null;
+  const newestPrice = (db.prepare('SELECT MAX(timestamp) as ts FROM prices').get() as any)?.ts || null;
+  const oldestHourly = (db.prepare('SELECT MIN(timestamp) as ts FROM hourly_prices').get() as any)?.ts || null;
+  const newestHourly = (db.prepare('SELECT MAX(timestamp) as ts FROM hourly_prices').get() as any)?.ts || null;
+
+  // Market analytics from latest prices
+  const lastPrices = getLastRecordedPrices();
+  let totalBuyVolume = 0;
+  let totalSellVolume = 0;
+  let totalBuyOrders = 0;
+  let totalSellOrders = 0;
+  let posMarginCount = 0;
+  let negMarginCount = 0;
+  let totalMargin = 0;
+  let maxMarginProduct = '';
+  let maxMarginValue = -Infinity;
+  let maxVolumeProduct = '';
+  let maxVolumeValue = 0;
+  let totalMarketCap = 0;
+
+  for (const [productId, p] of lastPrices.entries()) {
+    const buyPrice = p.buy_price || 0;
+    const sellPrice = p.sell_price || 0;
+    const buyVol = p.buy_volume || 0;
+    const sellVol = p.sell_volume || 0;
+    const margin = buyPrice - sellPrice;
+
+    totalBuyVolume += buyVol;
+    totalSellVolume += sellVol;
+    totalBuyOrders += p.buy_orders || 0;
+    totalSellOrders += p.sell_orders || 0;
+    totalMargin += margin;
+    totalMarketCap += (buyPrice + sellPrice) / 2 * (buyVol + sellVol);
+
+    if (margin > 0) posMarginCount++;
+    else negMarginCount++;
+
+    if (margin > maxMarginValue) {
+      maxMarginValue = margin;
+      maxMarginProduct = productId;
+    }
+
+    const combinedVol = buyVol + sellVol;
+    if (combinedVol > maxVolumeValue) {
+      maxVolumeValue = combinedVol;
+      maxVolumeProduct = productId;
+    }
+  }
+
+  const avgMargin = lastPrices.size > 0 ? totalMargin / lastPrices.size : 0;
+
+  return {
+    database: {
+      sizeBytes: dbSizeBytes,
+      sizeMB: +(dbSizeBytes / (1024 * 1024)).toFixed(2),
+      pageCount,
+      pageSize,
+      tables: {
+        prices: { rows: pricesCount, oldestTimestamp: oldestPrice, newestTimestamp: newestPrice },
+        hourly_prices: { rows: hourlyCount, oldestTimestamp: oldestHourly, newestTimestamp: newestHourly },
+        products: { rows: productsCount },
+        live_orders: { rows: liveOrdersCount }
+      }
+    },
+    market: {
+      totalProducts: lastPrices.size,
+      totalBuyVolume,
+      totalSellVolume,
+      totalBuyOrders,
+      totalSellOrders,
+      positiveMarginItems: posMarginCount,
+      negativeMarginItems: negMarginCount,
+      averageMargin: +avgMargin.toFixed(2),
+      estimatedMarketCap: totalMarketCap,
+      topMarginProduct: { productId: maxMarginProduct, margin: maxMarginValue },
+      topVolumeProduct: { productId: maxVolumeProduct, volume: maxVolumeValue }
+    },
+    uptime: {
+      serverStartedAt: serverStartTime,
+      uptimeMs: Date.now() - serverStartTime
+    }
+  };
+}
+
+// Track when this module was first loaded (proxy for server start)
+const serverStartTime = Date.now();
 
 export default db;

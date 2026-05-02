@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { getLastRecordedPrices, getRecentHistory, getHourlyHistory } from './db';
+import { getLastRecordedPrices, getRecentHistory, getHourlyHistory, getLiveOrders, getStatusStats } from './db';
 
 const app = express();
 app.use(cors());
@@ -51,6 +51,34 @@ app.get('/api/bazaar/history/:productId', (req, res) => {
       const history = getRecentHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: 'high', data: history });
     }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Get live order book (buy/sell summaries) for a specific product
+app.get('/api/bazaar/orders/:productId', (req, res) => {
+  try {
+    const productId = req.params.productId;
+    const orders = getLiveOrders(productId);
+    
+    if (!orders) {
+      return res.status(404).json({ success: false, error: 'Live orders not found for this product' });
+    }
+
+    res.json({ success: true, product_id: productId, buy_summary: orders.buy_summary, sell_summary: orders.sell_summary });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Status & analytics endpoint for the dashboard
+app.get('/api/status', (req, res) => {
+  try {
+    const stats = getStatusStats();
+    res.json({ success: true, ...stats, timestamp: Date.now() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });

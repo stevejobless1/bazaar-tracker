@@ -3,6 +3,8 @@ import {
   loadAllProductsIntoCache, 
   getLastRecordedPrices, 
   bulkInsertPrices, 
+  bulkUpsertLiveOrders,
+  LiveOrderSummaries,
   ProductPrice 
 } from './db';
 
@@ -53,6 +55,7 @@ async function runTracker() {
 
     const timestamp = data.lastUpdated || Date.now();
     const toInsert: ProductPrice[] = [];
+    const liveOrdersToInsert: LiveOrderSummaries[] = [];
 
     let totalProducts = 0;
     let changedProducts = 0;
@@ -108,6 +111,15 @@ async function runTracker() {
         toInsert.push(newRecord);
         lastState.set(productId, newRecord);
       }
+      
+      // Always extract live orders so the website has the freshest order book possible
+      const buySummary = (productData as any).buy_summary || [];
+      const sellSummary = (productData as any).sell_summary || [];
+      liveOrdersToInsert.push({
+        productId,
+        buySummary: JSON.stringify(buySummary),
+        sellSummary: JSON.stringify(sellSummary)
+      });
     }
 
     if (toInsert.length > 0) {
@@ -119,6 +131,15 @@ async function runTracker() {
       }
     } else {
       console.log(`[Tracker] No changes detected at ${new Date(timestamp).toISOString()}`);
+    }
+
+    // Upsert the live order summaries
+    if (liveOrdersToInsert.length > 0) {
+      try {
+        bulkUpsertLiveOrders(liveOrdersToInsert);
+      } catch (err) {
+        console.error('[Tracker] DB Live Orders Insert Error:', err);
+      }
     }
   };
 
