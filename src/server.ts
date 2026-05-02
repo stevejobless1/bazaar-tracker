@@ -4,7 +4,9 @@ import compression from 'compression';
 import { 
   getLastRecordedPrices, 
   getRecentHistory, 
+  getOneMinHistory,
   getFiveMinHistory, 
+  getThirtyMinHistory,
   getHourlyHistory, 
   getLiveOrders, 
   getStatusStats,
@@ -57,9 +59,15 @@ app.get('/api/bazaar/history/:productId', (req, res) => {
     if (resolution === '1h') {
       const history = getHourlyHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: '1h', data: history });
+    } else if (resolution === '30m') {
+      const history = getThirtyMinHistory(productId, limit);
+      res.json({ success: true, product_id: productId, resolution: '30m', data: history });
     } else if (resolution === '5m') {
       const history = getFiveMinHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: '5m', data: history });
+    } else if (resolution === '1m') {
+      const history = getOneMinHistory(productId, limit);
+      res.json({ success: true, product_id: productId, resolution: '1m', data: history });
     } else {
       const history = getRecentHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: 'raw', data: history });

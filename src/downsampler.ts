@@ -1,17 +1,28 @@
 import { 
   getRawPricesOlderThan, 
   deleteRawPricesOlderThan, 
+  getOneMinPricesOlderThan,
+  deleteOneMinPricesOlderThan,
   getFiveMinPricesOlderThan,
   deleteFiveMinPricesOlderThan,
+  getThirtyMinPricesOlderThan,
+  deleteThirtyMinPricesOlderThan,
+  bulkInsertOneMinPrices,
   bulkInsertFiveMinPrices,
+  bulkInsertThirtyMinPrices,
   bulkInsertHourlyPrices,
   vacuumDB,
   logHeartbeat
 } from './db';
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+
+const ONE_MINUTE_MS = 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /**
@@ -53,8 +64,7 @@ function condenseData(rows: any[], intervalMs: number): any[] {
     let buyMovingWeekSum = 0, sellMovingWeekSum = 0;
 
     for (const r of groupRows) {
-      // Handle the fact that 'prices' table has different column names than 'hourly_prices'/'five_min_prices'
-      // prices has buy_price, while the candles have buy_open/high/low/close
+      // Handle the fact that 'prices' table has different column names than resolution tables
       const bPrice = r.buy_price !== undefined ? r.buy_price : r.buy_close;
       const sPrice = r.sell_price !== undefined ? r.sell_price : r.sell_close;
       const bVol = r.buy_volume !== undefined ? r.buy_volume : r.avg_buy_volume;
@@ -103,45 +113,70 @@ function condenseData(rows: any[], intervalMs: number): any[] {
 export function runDownsampler() {
   console.log('[Downsampler] Starting multi-tier downsampling...');
 
-  // --- Tier 1: Raw (20s) -> 5-Minute (after 24h) ---
+  // --- Tier 1: Raw (20s) -> 1-Minute (after 24h) ---
   const tier1Cutoff = Date.now() - TWENTY_FOUR_HOURS_MS;
   const rawData = getRawPricesOlderThan(tier1Cutoff);
   if (rawData.length > 0) {
-    console.log(`[Downsampler] Tier 1: Condensing ${rawData.length} raw records into 5m candles...`);
-    const fiveMinCandles = condenseData(rawData, FIVE_MINUTES_MS);
+    console.log(`[Downsampler] Tier 1: Condensing ${rawData.length} raw records into 1m candles...`);
+    const oneMinCandles = condenseData(rawData, ONE_MINUTE_MS);
     try {
-      bulkInsertFiveMinPrices(fiveMinCandles);
+      bulkInsertOneMinPrices(oneMinCandles);
       deleteRawPricesOlderThan(tier1Cutoff);
-      console.log(`[Downsampler] Tier 1 Complete: Created ${fiveMinCandles.length} candles.`);
+      console.log(`[Downsampler] Tier 1 Complete: Created ${oneMinCandles.length} 1m candles.`);
     } catch (err) {
       console.error('[Downsampler] Tier 1 Error:', err);
     }
-  } else {
-    console.log('[Downsampler] Tier 1: No raw data older than 24h.');
   }
 
-  // --- Tier 2: 5-Minute -> 1-Hour (after 7 days) ---
-  const tier2Cutoff = Date.now() - SEVEN_DAYS_MS;
-  const midData = getFiveMinPricesOlderThan(tier2Cutoff);
-  if (midData.length > 0) {
-    console.log(`[Downsampler] Tier 2: Condensing ${midData.length} 5m records into 1h candles...`);
-    const hourlyCandles = condenseData(midData, ONE_HOUR_MS);
+  // --- Tier 2: 1-Minute -> 5-Minute (after 3 days) ---
+  const tier2Cutoff = Date.now() - THREE_DAYS_MS;
+  const oneMinData = getOneMinPricesOlderThan(tier2Cutoff);
+  if (oneMinData.length > 0) {
+    console.log(`[Downsampler] Tier 2: Condensing ${oneMinData.length} 1m records into 5m candles...`);
+    const fiveMinCandles = condenseData(oneMinData, FIVE_MINUTES_MS);
     try {
-      bulkInsertHourlyPrices(hourlyCandles);
-      deleteFiveMinPricesOlderThan(tier2Cutoff);
-      console.log(`[Downsampler] Tier 2 Complete: Created ${hourlyCandles.length} candles.`);
+      bulkInsertFiveMinPrices(fiveMinCandles);
+      deleteOneMinPricesOlderThan(tier2Cutoff);
+      console.log(`[Downsampler] Tier 2 Complete: Created ${fiveMinCandles.length} 5m candles.`);
     } catch (err) {
       console.error('[Downsampler] Tier 2 Error:', err);
     }
-  } else {
-    console.log('[Downsampler] Tier 2: No 5m data older than 7 days.');
+  }
+
+  // --- Tier 3: 5-Minute -> 30-Minute (after 7 days) ---
+  const tier3Cutoff = Date.now() - SEVEN_DAYS_MS;
+  const fiveMinData = getFiveMinPricesOlderThan(tier3Cutoff);
+  if (fiveMinData.length > 0) {
+    console.log(`[Downsampler] Tier 3: Condensing ${fiveMinData.length} 5m records into 30m candles...`);
+    const thirtyMinCandles = condenseData(fiveMinData, THIRTY_MINUTES_MS);
+    try {
+      bulkInsertThirtyMinPrices(thirtyMinCandles);
+      deleteFiveMinPricesOlderThan(tier3Cutoff);
+      console.log(`[Downsampler] Tier 3 Complete: Created ${thirtyMinCandles.length} 30m candles.`);
+    } catch (err) {
+      console.error('[Downsampler] Tier 3 Error:', err);
+    }
+  }
+
+  // --- Tier 4: 30-Minute -> 1-Hour (after 14 days) ---
+  const tier4Cutoff = Date.now() - FOURTEEN_DAYS_MS;
+  const thirtyMinData = getThirtyMinPricesOlderThan(tier4Cutoff);
+  if (thirtyMinData.length > 0) {
+    console.log(`[Downsampler] Tier 4: Condensing ${thirtyMinData.length} 30m records into 1h candles...`);
+    const hourlyCandles = condenseData(thirtyMinData, ONE_HOUR_MS);
+    try {
+      bulkInsertHourlyPrices(hourlyCandles);
+      deleteThirtyMinPricesOlderThan(tier4Cutoff);
+      console.log(`[Downsampler] Tier 4 Complete: Created ${hourlyCandles.length} 1h candles.`);
+    } catch (err) {
+      console.error('[Downsampler] Tier 4 Error:', err);
+    }
   }
 
   // Optimize database after cleaning up
   vacuumDB();
   logHeartbeat('downsampler');
 }
-
 
 export function scheduleDownsampler() {
   runDownsampler();
