@@ -150,7 +150,6 @@ export function initDB() {
     );
     CREATE INDEX IF NOT EXISTS idx_ten_min_prices_product_time ON ten_min_prices(product_id, timestamp);
 
-    CREATE TABLE IF NOT EXISTS thirty_min_prices (
 
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id INTEGER PRIMARY KEY,

@@ -8,7 +8,8 @@
     "build": "tsc",
     "start:tracker": "node dist/tracker.js",
     "start:api": "node dist/server.js",
-    "start:downsampler": "node dist/downsampler.js"
+    "start:downsampler": "node dist/downsampler.js",
+    "import:mayors": "ts-node src/scripts/importMayors.ts"
   },
   "keywords": [],
   "author": "",
