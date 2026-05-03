@@ -10,18 +10,26 @@ async function importMayors() {
   // Ensure DB is initialized
   initDB();
 
-  for (const mayor of legacyMayors) {
+  for (let i = 0; i < legacyMayors.length; i++) {
+    const mayor = legacyMayors[i];
     try {
-      // Date.parse handles "MM/DD/YYYY HH:MM:SS +00:00"
-      const timestamp = new Date(mayor.start).getTime();
+      const startTs = new Date(mayor.start).getTime();
       
-      if (isNaN(timestamp)) {
+      if (isNaN(startTs)) {
         console.warn(`[Import] Warning: Invalid date format for mayor: ${mayor.name} (${mayor.start})`);
         skipped++;
         continue;
       }
 
-      insertMayor(timestamp, mayor.name);
+      // Infer end date from next mayor's start, or 5.2 days later if it's the last one
+      let endTs: number;
+      if (i < legacyMayors.length - 1) {
+        endTs = new Date(legacyMayors[i+1].start).getTime();
+      } else {
+        endTs = startTs + 450000000; // ~5.2 days
+      }
+
+      insertMayor(mayor.name, startTs, endTs);
       count++;
     } catch (err) {
       console.error(`[Import] Failed to import mayor: ${mayor.name}`, err);
