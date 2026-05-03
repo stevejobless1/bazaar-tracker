@@ -161,6 +161,22 @@ app.get('/api/mayors', (req, res) => {
   }
 });
 
+app.get('/api/debug/db-counts', (req, res) => {
+  try {
+    const counts = {
+      prices: db.prepare('SELECT COUNT(*) as count FROM prices').get() as any,
+      ten_min: db.prepare('SELECT COUNT(*) as count FROM ten_min_prices').get() as any,
+      thirty_min: db.prepare('SELECT COUNT(*) as count FROM thirty_min_prices').get() as any,
+      hourly: db.prepare('SELECT COUNT(*) as count FROM hourly_prices').get() as any,
+      daily: db.prepare('SELECT COUNT(*) as count FROM daily_prices').get() as any,
+      mayors: db.prepare('SELECT COUNT(*) as count FROM mayors').get() as any,
+    };
+    res.json(counts);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);
