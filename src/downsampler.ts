@@ -194,8 +194,6 @@ export function runDownsampler() {
 
   console.log('[Downsampler] All tiers complete for all products.');
   
-  // Optimize database after cleaning up
-  vacuumDB();
   logHeartbeat('downsampler');
 }
 
