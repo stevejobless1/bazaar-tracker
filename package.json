@@ -9,7 +9,8 @@
     "start:tracker": "node dist/tracker.js",
     "start:api": "node dist/server.js",
     "start:downsampler": "node dist/downsampler.js",
-    "import:mayors": "ts-node src/scripts/importMayors.ts"
+    "import:mayors": "ts-node src/scripts/importMayors.ts",
+    "import:bazaar": "ts-node src/scripts/importBazaarHistory.ts"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +21,7 @@
     "better-sqlite3": "^12.9.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
+    "csv-parser": "^3.2.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1"
   },

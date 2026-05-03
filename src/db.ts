@@ -5,7 +5,7 @@ import path from 'path';
 const dbPath = process.env.DB_PATH 
   ? path.resolve(process.env.DB_PATH) 
   : path.resolve(__dirname, '../bazaar.db');
-const db = new Database(dbPath);
+export const db = new Database(dbPath);
 
 // Enable Write-Ahead Logging for better performance and concurrency
 db.pragma('journal_mode = WAL');
@@ -36,6 +36,7 @@ export function initDB() {
 
     -- Indexes for high-speed queries on the high-resolution table
     CREATE INDEX IF NOT EXISTS idx_prices_product_time ON prices(product_id, timestamp);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_prices_unique ON prices(product_id, timestamp);
 
     -- New resolution tables
     CREATE TABLE IF NOT EXISTS one_min_prices (
