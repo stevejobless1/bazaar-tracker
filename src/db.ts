@@ -126,9 +126,31 @@ export function initDB() {
       FOREIGN KEY (product_id) REFERENCES products(id),
       UNIQUE(product_id, timestamp)
     );
-
-    -- Indexes for the 5-minute table
     CREATE INDEX IF NOT EXISTS idx_five_min_prices_product_time ON five_min_prices(product_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS ten_min_prices (
+      timestamp INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      buy_open REAL,
+      buy_high REAL,
+      buy_low REAL,
+      buy_close REAL,
+      sell_open REAL,
+      sell_high REAL,
+      sell_low REAL,
+      sell_close REAL,
+      avg_buy_volume INTEGER,
+      avg_sell_volume INTEGER,
+      avg_buy_orders INTEGER,
+      avg_sell_orders INTEGER,
+      avg_buy_moving_week INTEGER,
+      avg_sell_moving_week INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      UNIQUE(product_id, timestamp)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ten_min_prices_product_time ON ten_min_prices(product_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS thirty_min_prices (
 
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id INTEGER PRIMARY KEY,
@@ -182,6 +204,14 @@ const insertOneMinPriceStmt = db.prepare(`
 
 const insertFiveMinPriceStmt = db.prepare(`
   INSERT OR REPLACE INTO five_min_prices (
+    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
+    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
+    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertTenMinPriceStmt = db.prepare(`
+  INSERT OR REPLACE INTO ten_min_prices (
     timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
     sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
     avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
@@ -305,6 +335,14 @@ export function deleteFiveMinPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM five_min_prices WHERE timestamp < ?').run(timestampMs);
 }
 
+export function getTenMinPricesOlderThan(timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM ten_min_prices WHERE timestamp < ?').all(timestampMs);
+}
+
+export function deleteTenMinPricesOlderThan(timestampMs: number) {
+  db.prepare('DELETE FROM ten_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
 export function getThirtyMinPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM thirty_min_prices WHERE timestamp < ?').all(timestampMs);
 }
@@ -330,6 +368,20 @@ export const bulkInsertOneMinPrices = db.transaction((data: any[]) => {
 export const bulkInsertFiveMinPrices = db.transaction((data: any[]) => {
   for (const d of data) {
     insertFiveMinPriceStmt.run(
+      d.timestamp,
+      d.product_id,
+      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
+      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
+      d.avg_buy_volume, d.avg_sell_volume,
+      d.avg_buy_orders, d.avg_sell_orders,
+      d.avg_buy_moving_week, d.avg_sell_moving_week
+    );
+  }
+});
+
+export const bulkInsertTenMinPrices = db.transaction((data: any[]) => {
+  for (const d of data) {
+    insertTenMinPriceStmt.run(
       d.timestamp,
       d.product_id,
       d.buy_open, d.buy_high, d.buy_low, d.buy_close,
@@ -382,6 +434,11 @@ export function getOneMinHistory(productIdStr: string, limit: number = 1000) {
 export function getFiveMinHistory(productIdStr: string, limit: number = 1000) {
   const pId = getOrCreateProductId(productIdStr);
   return db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
+}
+
+export function getTenMinHistory(productIdStr: string, limit: number = 1000) {
+  const pId = getOrCreateProductId(productIdStr);
+  return db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
 }
 
 export function getThirtyMinHistory(productIdStr: string, limit: number = 1000) {
@@ -583,6 +640,11 @@ export function getStatusStats(forceRefresh = false) {
           rows: (db.prepare('SELECT COUNT(*) as cnt FROM five_min_prices').get() as any)?.cnt || 0,
           oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null,
           newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null
+        },
+        ten_min_prices: { 
+          rows: (db.prepare('SELECT COUNT(*) as cnt FROM ten_min_prices').get() as any)?.cnt || 0,
+          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM ten_min_prices').get() as any)?.ts || null,
+          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM ten_min_prices').get() as any)?.ts || null
         },
         thirty_min_prices: { 
           rows: (db.prepare('SELECT COUNT(*) as cnt FROM thirty_min_prices').get() as any)?.cnt || 0,

@@ -6,6 +6,7 @@ import {
   getRecentHistory, 
   getOneMinHistory,
   getFiveMinHistory, 
+  getTenMinHistory,
   getThirtyMinHistory,
   getHourlyHistory, 
   getLiveOrders, 
@@ -60,6 +61,9 @@ app.get('/api/bazaar/history/:productId', (req, res) => {
     if (resolution === '1h') {
       const history = getHourlyHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: '1h', data: history });
+    } else if (resolution === '10m') {
+      const history = getTenMinHistory(productId, limit);
+      res.json({ success: true, product_id: productId, resolution: '10m', data: history });
     } else if (resolution === '30m') {
       const history = getThirtyMinHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: '30m', data: history });
