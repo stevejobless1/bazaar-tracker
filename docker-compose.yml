@@ -9,6 +9,7 @@ services:
       - bazaar-data:/app/data
     environment:
       - DB_PATH=/app/data/bazaar.db
+      - HYPIXEL_API_KEY=${HYPIXEL_API_KEY}
     restart: always
 
   # The REST API

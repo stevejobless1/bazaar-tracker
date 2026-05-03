@@ -10,6 +10,7 @@ import {
   getHourlyHistory, 
   getLiveOrders, 
   getStatusStats,
+  getMayorsInRange,
   logHeartbeat
 } from './db';
 
@@ -100,6 +101,19 @@ app.get('/api/status', (req, res) => {
   try {
     const stats = getStatusStats();
     res.json({ success: true, ...stats, timestamp: Date.now() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Get mayor transitions in a range
+app.get('/api/mayors', (req, res) => {
+  try {
+    const start = parseInt(req.query.start as string) || 0;
+    const end = parseInt(req.query.end as string) || Date.now();
+    const mayors = getMayorsInRange(start, end);
+    res.json({ success: true, data: mayors });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });

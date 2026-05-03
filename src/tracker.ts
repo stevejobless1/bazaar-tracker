@@ -5,23 +5,55 @@ import {
   bulkInsertPrices, 
   bulkUpsertLiveOrders,
   logHeartbeat,
+  insertMayor,
+  getLastMayor,
   LiveOrderSummaries,
   ProductPrice 
 } from './db';
 
 const BAZAAR_API_URL = 'https://api.hypixel.net/v2/skyblock/bazaar';
+const MAYOR_API_URL = 'https://api.hypixel.net/v2/resources/skyblock/election';
 const POLL_INTERVAL_MS = 20 * 1000; // 20 seconds
+const MAYOR_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+const HYPIXEL_API_KEY = process.env.HYPIXEL_API_KEY;
 
 // Keep track of the last known state to compute deltas
 let lastState = new Map<string, ProductPrice>();
 
 async function fetchBazaarData() {
   try {
-    const response = await axios.get(BAZAAR_API_URL, { timeout: 10000 });
+    const headers: any = { timeout: 10000 };
+    if (HYPIXEL_API_KEY) {
+      headers.headers = { 'API-Key': HYPIXEL_API_KEY };
+    }
+    const response = await axios.get(BAZAAR_API_URL, headers);
     return response.data;
   } catch (error) {
     console.error(`[Tracker] Failed to fetch Bazaar API: ${(error as Error).message}`);
     return null;
+  }
+}
+
+async function fetchMayorData() {
+  try {
+    const headers: any = { timeout: 10000 };
+    if (HYPIXEL_API_KEY) {
+      headers.headers = { 'API-Key': HYPIXEL_API_KEY };
+    }
+    const response = await axios.get(MAYOR_API_URL, headers);
+    const data = response.data;
+    if (data && data.success && data.mayor) {
+      const currentMayorName = data.mayor.name;
+      const lastMayor = getLastMayor();
+      
+      if (!lastMayor || lastMayor.name !== currentMayorName) {
+        console.log(`[Tracker] Mayor changed from ${lastMayor?.name || 'Unknown'} to ${currentMayorName}`);
+        insertMayor(Date.now(), currentMayorName);
+      }
+    }
+  } catch (error) {
+    console.error(`[Tracker] Failed to fetch Mayor API: ${(error as Error).message}`);
   }
 }
 
@@ -150,6 +182,10 @@ async function runTracker() {
   // Run immediately, then interval
   await tick();
   setInterval(tick, POLL_INTERVAL_MS);
+
+  // Run mayor check immediately, then interval
+  await fetchMayorData();
+  setInterval(fetchMayorData, MAYOR_POLL_INTERVAL_MS);
 }
 
 runTracker();

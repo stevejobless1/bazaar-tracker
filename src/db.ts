@@ -143,6 +143,12 @@ export function initDB() {
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_heartbeats_service_time ON service_heartbeats(service_name, timestamp);
+
+    -- Table to track SkyBlock mayors
+    CREATE TABLE IF NOT EXISTS mayors (
+      timestamp INTEGER PRIMARY KEY,
+      name TEXT NOT NULL
+    );
   `);
 }
 
@@ -441,6 +447,20 @@ export function getUptimeHistory(serviceName: string, days: number = 30) {
   }
   
   return history.reverse();
+}
+
+// --- MAYOR FUNCTIONS ---
+
+export function insertMayor(timestamp: number, name: string) {
+  db.prepare('INSERT OR REPLACE INTO mayors (timestamp, name) VALUES (?, ?)').run(timestamp, name);
+}
+
+export function getLastMayor(): { timestamp: number, name: string } | null {
+  return db.prepare('SELECT * FROM mayors ORDER BY timestamp DESC LIMIT 1').get() as any || null;
+}
+
+export function getMayorsInRange(startTs: number, endTs: number): { timestamp: number, name: string }[] {
+  return db.prepare('SELECT * FROM mayors WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC').all(startTs, endTs) as any;
 }
 
 export function vacuumDB() {
