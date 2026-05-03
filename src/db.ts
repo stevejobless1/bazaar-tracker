@@ -167,8 +167,10 @@ export function initDB() {
 
     -- Table to track SkyBlock mayors
     CREATE TABLE IF NOT EXISTS mayors (
-      timestamp INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      start_date INTEGER NOT NULL,
+      end_date INTEGER NOT NULL,
+      UNIQUE(name, start_date, end_date)
     );
   `);
 }
@@ -520,16 +522,16 @@ export function getUptimeHistory(serviceName: string) {
 
 // --- MAYOR FUNCTIONS ---
 
-export function insertMayor(timestamp: number, name: string) {
-  db.prepare('INSERT OR REPLACE INTO mayors (timestamp, name) VALUES (?, ?)').run(timestamp, name);
+export function insertMayor(name: string, startDate: number, endDate: number) {
+  db.prepare('INSERT OR IGNORE INTO mayors (name, start_date, end_date) VALUES (?, ?, ?)').run(name, startDate, endDate);
 }
 
-export function getLastMayor(): { timestamp: number, name: string } | null {
-  return db.prepare('SELECT * FROM mayors ORDER BY timestamp DESC LIMIT 1').get() as any || null;
+export function getLastMayor(): { start_date: number, end_date: number, name: string } | null {
+  return db.prepare('SELECT * FROM mayors ORDER BY start_date DESC LIMIT 1').get() as any || null;
 }
 
-export function getMayorsInRange(startTs: number, endTs: number): { timestamp: number, name: string }[] {
-  return db.prepare('SELECT * FROM mayors WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC').all(startTs, endTs) as any;
+export function getMayorsInRange(startTs: number, endTs: number): { start_date: number, end_date: number, name: string }[] {
+  return db.prepare('SELECT * FROM mayors WHERE start_date >= ? AND start_date <= ? ORDER BY start_date ASC').all(startTs, endTs) as any;
 }
 
 export function vacuumDB() {

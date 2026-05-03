@@ -49,7 +49,7 @@ async function fetchMayorData() {
       
       if (!lastMayor || lastMayor.name !== currentMayorName) {
         console.log(`[Tracker] Mayor changed from ${lastMayor?.name || 'Unknown'} to ${currentMayorName}`);
-        insertMayor(Date.now(), currentMayorName);
+        insertMayor(currentMayorName, Date.now(), Date.now() + 450000000); // ~5.2 days for term end
       }
     }
   } catch (error) {
