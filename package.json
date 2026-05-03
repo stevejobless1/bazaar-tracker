@@ -10,6 +10,7 @@
     "start:api": "node dist/server.js",
     "start:downsampler": "node dist/downsampler.js",
     "import:mayors": "ts-node src/scripts/importMayors.ts",
+    "import:mayors:file": "ts-node src/scripts/importMayorsFromFile.ts",
     "import:bazaar": "ts-node src/scripts/importBazaarHistory.ts"
   },
   "keywords": [],
