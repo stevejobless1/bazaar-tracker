@@ -18,7 +18,7 @@ if (!fs.existsSync(resolvedPath)) {
   process.exit(1);
 }
 
-const FOUR_WEEKS_MS = 28 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function importData() {
   console.log(`Starting legacy import from ${resolvedPath}...`);
@@ -27,16 +27,9 @@ async function importData() {
   let skipped = 0;
   let inserted = 0;
 
-  // Prepared statements for different tiers
-  const insertPriceStmt = db.prepare(`
-    INSERT OR IGNORE INTO prices (
-      timestamp, product_id, buy_price, sell_price, 
-      buy_volume, sell_volume, buy_orders, sell_orders
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertHourlyStmt = db.prepare(`
-    INSERT OR IGNORE INTO hourly_prices (
+  // Legacy CSV data is daily resolution — insert directly into daily_prices
+  const insertDailyStmt = db.prepare(`
+    INSERT OR IGNORE INTO daily_prices (
       timestamp, product_id, 
       buy_open, buy_high, buy_low, buy_close, 
       sell_open, sell_high, sell_low, sell_close, 
@@ -53,12 +46,14 @@ async function importData() {
   let currentBatch: any[] = [];
 
   const processBatch = db.transaction((rows) => {
-    const now = Date.now();
     for (const row of rows) {
       const internalId = getOrCreateProductId(row.product_id);
-      const timestamp = new Date(row.timestamp).getTime();
+      const rawTs = new Date(row.timestamp).getTime();
       
-      if (isNaN(timestamp)) continue;
+      if (isNaN(rawTs)) continue;
+
+      // Align to day boundary
+      const timestamp = Math.floor(rawTs / DAY_MS) * DAY_MS;
 
       const buy = parseFloat(row.buy) || 0;
       const sell = parseFloat(row.sell) || 0;
@@ -67,32 +62,14 @@ async function importData() {
       const buyOrders = parseInt(row.buyOrders) || 0;
       const sellOrders = parseInt(row.sellOrders) || 0;
 
-      let result;
-      if (now - timestamp > FOUR_WEEKS_MS) {
-        // Insert into hourly table for historical data
-        // Align timestamp to the start of the hour
-        const hourlyTs = Math.floor(timestamp / (60 * 60 * 1000)) * (60 * 60 * 1000);
-        result = insertHourlyStmt.run(
-          hourlyTs,
-          internalId,
-          buy, buy, buy, buy, // OHLC all same
-          sell, sell, sell, sell,
-          buyVol, sellVol,
-          buyOrders, sellOrders
-        );
-      } else {
-        // Insert into raw prices for recent data
-        result = insertPriceStmt.run(
-          timestamp,
-          internalId,
-          buy,
-          sell,
-          buyVol,
-          sellVol,
-          buyOrders,
-          sellOrders
-        );
-      }
+      const result = insertDailyStmt.run(
+        timestamp,
+        internalId,
+        buy, buy, buy, buy, // OHLC all same for daily snapshots
+        sell, sell, sell, sell,
+        buyVol, sellVol,
+        buyOrders, sellOrders
+      );
 
       if (result.changes > 0) {
         inserted++;

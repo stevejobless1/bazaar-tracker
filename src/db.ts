@@ -109,6 +109,28 @@ export function initDB() {
     -- Indexes for the hourly table
     CREATE INDEX IF NOT EXISTS idx_hourly_prices_product_time ON hourly_prices(product_id, timestamp);
 
+    CREATE TABLE IF NOT EXISTS daily_prices (
+      timestamp INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      buy_open REAL,
+      buy_high REAL,
+      buy_low REAL,
+      buy_close REAL,
+      sell_open REAL,
+      sell_high REAL,
+      sell_low REAL,
+      sell_close REAL,
+      avg_buy_volume INTEGER,
+      avg_sell_volume INTEGER,
+      avg_buy_orders INTEGER,
+      avg_sell_orders INTEGER,
+      avg_buy_moving_week INTEGER,
+      avg_sell_moving_week INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      UNIQUE(product_id, timestamp)
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_prices_product_time ON daily_prices(product_id, timestamp);
+
     CREATE TABLE IF NOT EXISTS five_min_prices (
       timestamp INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
@@ -261,6 +283,14 @@ const insertThirtyMinPriceStmt = db.prepare(`
 
 const insertHourlyPriceStmt = db.prepare(`
   INSERT OR REPLACE INTO hourly_prices (
+    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
+    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
+    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertDailyPriceStmt = db.prepare(`
+  INSERT OR REPLACE INTO daily_prices (
     timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
     sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
     avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
@@ -424,6 +454,14 @@ export function deleteThirtyMinPricesOlderThanForProduct(productId: number, time
   db.prepare('DELETE FROM thirty_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
+export function getHourlyPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
+export function deleteHourlyPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM hourly_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
+}
+
 export const bulkInsertOneMinPrices = db.transaction((data: any[]) => {
   for (const d of data) {
     insertOneMinPriceStmt.run(
@@ -494,6 +532,20 @@ export const bulkInsertHourlyPrices = db.transaction((hourlyData: any[]) => {
   }
 });
 
+export const bulkInsertDailyPrices = db.transaction((data: any[]) => {
+  for (const d of data) {
+    insertDailyPriceStmt.run(
+      d.timestamp,
+      d.product_id,
+      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
+      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
+      d.avg_buy_volume, d.avg_sell_volume,
+      d.avg_buy_orders, d.avg_sell_orders,
+      d.avg_buy_moving_week, d.avg_sell_moving_week
+    );
+  }
+});
+
 export function getRecentHistory(productIdStr: string, limit: number = 1000) {
   const pId = getOrCreateProductId(productIdStr);
   return db.prepare('SELECT * FROM prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
@@ -522,6 +574,67 @@ export function getThirtyMinHistory(productIdStr: string, limit: number = 1000) 
 export function getHourlyHistory(productIdStr: string, limit: number = 1000) {
   const pId = getOrCreateProductId(productIdStr);
   return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
+}
+
+export function getDailyHistory(productIdStr: string, limit: number = 5000) {
+  const pId = getOrCreateProductId(productIdStr);
+  return db.prepare('SELECT * FROM daily_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
+}
+
+// --- UNIFIED HISTORY (stitches all tiers into one seamless timeline) ---
+// Each tier query is bounded to its own time range to avoid overlap.
+// Uses prepared statements with time-range bounds for performance.
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const THREE_DAYS_MS = 3 * ONE_DAY_MS;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const TWO_WEEKS_MS = 14 * ONE_DAY_MS;
+const FOUR_WEEKS_MS = 28 * ONE_DAY_MS;
+const TWO_MONTHS_MS = 60 * ONE_DAY_MS;
+
+export function getUnifiedHistory(productIdStr: string) {
+  const pId = getOrCreateProductId(productIdStr);
+  const now = Date.now();
+
+  // Normalize a row from any tier into { timestamp, buyPrice, sellPrice, buyVolume, sellVolume }
+  const normalize = (r: any) => ({
+    timestamp: r.timestamp,
+    buyPrice: r.buy_price !== undefined ? r.buy_price : r.buy_close,
+    sellPrice: r.sell_price !== undefined ? r.sell_price : r.sell_close,
+    buyVolume: r.buy_volume !== undefined ? r.buy_volume : r.avg_buy_volume,
+    sellVolume: r.sell_volume !== undefined ? r.sell_volume : r.avg_sell_volume,
+  });
+
+  // Tier boundaries (from most recent to oldest)
+  const t1 = now - ONE_DAY_MS;       // raw: last 1 day
+  const t2 = now - THREE_DAYS_MS;    // 1-min: 1-3 days ago
+  const t3 = now - ONE_WEEK_MS;      // 5-min: 3d-1w ago
+  const t4 = now - TWO_WEEKS_MS;     // 10-min: 1w-2w ago
+  const t5 = now - FOUR_WEEKS_MS;    // 30-min: 2w-4w ago
+  const t6 = now - TWO_MONTHS_MS;    // hourly: 4w-2mo ago
+                                      // daily: everything older than 2mo
+
+  // Query each tier within its time range only, ordered ASC for chronological stitching
+  const daily   = db.prepare('SELECT * FROM daily_prices WHERE product_id = ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t6);
+  const hourly  = db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t6, t5);
+  const thirtyM = db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t5, t4);
+  const tenM    = db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t4, t3);
+  const fiveM   = db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t3, t2);
+  const oneM    = db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t2, t1);
+  const raw     = db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t1);
+
+  // Stitch together in chronological order (already sorted ASC per-tier)
+  const unified = [
+    ...daily.map(normalize),
+    ...hourly.map(normalize),
+    ...thirtyM.map(normalize),
+    ...tenM.map(normalize),
+    ...fiveM.map(normalize),
+    ...oneM.map(normalize),
+    ...raw.map(normalize),
+  ];
+
+  return unified;
 }
 
 export interface LiveOrderSummaries {
@@ -727,6 +840,11 @@ export function getStatusStats(forceRefresh = false) {
           newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM thirty_min_prices').get() as any)?.ts || null
         },
         hourly_prices: { rows: hourlyCount, oldestTimestamp: oldestHourly, newestTimestamp: newestHourly },
+        daily_prices: {
+          rows: (db.prepare('SELECT COUNT(*) as cnt FROM daily_prices').get() as any)?.cnt || 0,
+          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM daily_prices').get() as any)?.ts || null,
+          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM daily_prices').get() as any)?.ts || null
+        },
         products: { rows: productsCount },
         live_orders: { rows: liveOrdersCount }
       }

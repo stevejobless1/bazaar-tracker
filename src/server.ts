@@ -8,7 +8,9 @@ import {
   getFiveMinHistory, 
   getTenMinHistory,
   getThirtyMinHistory,
-  getHourlyHistory, 
+  getHourlyHistory,
+  getDailyHistory,
+  getUnifiedHistory,
   getLiveOrders, 
   getStatusStats,
   getMayorsInRange,
@@ -58,7 +60,10 @@ app.get('/api/bazaar/history/:productId', (req, res) => {
     const resolution = req.query.resolution as string || (req.query.hourly === 'true' ? '1h' : 'raw');
     const limit = parseInt(req.query.limit as string) || 1000;
 
-    if (resolution === '1h') {
+    if (resolution === '1d') {
+      const history = getDailyHistory(productId, limit);
+      res.json({ success: true, product_id: productId, resolution: '1d', data: history });
+    } else if (resolution === '1h') {
       const history = getHourlyHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: '1h', data: history });
     } else if (resolution === '10m') {
@@ -77,6 +82,38 @@ app.get('/api/bazaar/history/:productId', (req, res) => {
       const history = getRecentHistory(productId, limit);
       res.json({ success: true, product_id: productId, resolution: 'raw', data: history });
     }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Unified history endpoint - stitches all resolution tiers into one seamless timeline
+// Cached per-product for 30 seconds to avoid heavy queries on every poll
+const unifiedCache = new Map<string, { data: any; timestamp: number }>();
+const UNIFIED_CACHE_TTL = 30 * 1000; // 30 seconds
+
+app.get('/api/bazaar/history/:productId/unified', (req, res) => {
+  try {
+    const productId = req.params.productId;
+    const now = Date.now();
+    const cached = unifiedCache.get(productId);
+
+    if (cached && (now - cached.timestamp < UNIFIED_CACHE_TTL)) {
+      return res.json({ success: true, product_id: productId, cached: true, data: cached.data });
+    }
+
+    const data = getUnifiedHistory(productId);
+    unifiedCache.set(productId, { data, timestamp: now });
+
+    // Evict stale entries periodically (keep cache bounded)
+    if (unifiedCache.size > 200) {
+      for (const [key, val] of unifiedCache.entries()) {
+        if (now - val.timestamp > UNIFIED_CACHE_TTL * 2) unifiedCache.delete(key);
+      }
+    }
+
+    res.json({ success: true, product_id: productId, cached: false, data });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });

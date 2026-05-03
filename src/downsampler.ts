@@ -9,11 +9,14 @@ import {
   deleteTenMinPricesOlderThanForProduct,
   getThirtyMinPricesOlderThanForProduct,
   deleteThirtyMinPricesOlderThanForProduct,
+  getHourlyPricesOlderThanForProduct,
+  deleteHourlyPricesOlderThanForProduct,
   bulkInsertOneMinPrices,
   bulkInsertFiveMinPrices,
   bulkInsertTenMinPrices,
   bulkInsertThirtyMinPrices,
   bulkInsertHourlyPrices,
+  bulkInsertDailyPrices,
   vacuumDB,
   logHeartbeat,
   cleanupHeartbeats,
@@ -25,7 +28,7 @@ const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 const FOUR_WEEKS_MS = 28 * 24 * 60 * 60 * 1000;
-const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000;
 
 const ONE_MINUTE_MS = 60 * 1000;
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -189,6 +192,19 @@ export function runDownsampler() {
         deleteThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
       } catch (err) {
         console.error(`[Downsampler] Tier 5 Error for ${product.product_id}:`, err);
+      }
+    }
+
+    // --- Tier 6: 1-Hour -> 1-Day (after 2 months) ---
+    const tier6Cutoff = Date.now() - TWO_MONTHS_MS;
+    const hourlyData = getHourlyPricesOlderThanForProduct(pId, tier6Cutoff);
+    if (hourlyData.length > 0) {
+      const dailyCandles = condenseData(hourlyData, ONE_DAY_MS);
+      try {
+        bulkInsertDailyPrices(dailyCandles);
+        deleteHourlyPricesOlderThanForProduct(pId, tier6Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 6 Error for ${product.product_id}:`, err);
       }
     }
   }
