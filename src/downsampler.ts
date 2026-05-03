@@ -16,6 +16,7 @@ import {
   bulkInsertHourlyPrices,
   vacuumDB,
   logHeartbeat,
+  cleanupHeartbeats,
   getAllProductsStmt
 } from './db';
 
@@ -194,6 +195,11 @@ export function runDownsampler() {
 
   console.log('[Downsampler] All tiers complete for all products.');
   
+  // Run maintenance tasks once a day during the downsampler run
+  console.log('[Downsampler] Running maintenance tasks...');
+  cleanupHeartbeats();
+  vacuumDB();
+
   logHeartbeat('downsampler');
 }
 

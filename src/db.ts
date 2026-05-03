@@ -549,7 +549,9 @@ export function getLiveOrders(productIdStr: string): any {
 
 export function logHeartbeat(serviceName: string) {
   db.prepare('INSERT INTO service_heartbeats (service_name, timestamp) VALUES (?, ?)').run(serviceName, Date.now());
-  
+}
+
+export function cleanupHeartbeats() {
   // Cleanup old heartbeats (keep 90 days)
   const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
   db.prepare('DELETE FROM service_heartbeats WHERE timestamp < ?').run(ninetyDaysAgo);
