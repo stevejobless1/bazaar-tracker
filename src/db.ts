@@ -164,7 +164,18 @@ export function initDB() {
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_heartbeats_service_time ON service_heartbeats(service_name, timestamp);
+  `);
 
+  // Migration: Check if mayors table has the old 'timestamp' column instead of 'start_date'
+  const mayorTableInfo = db.prepare("PRAGMA table_info(mayors)").all();
+  const hasOldSchema = mayorTableInfo.some((col: any) => col.name === 'timestamp');
+  
+  if (hasOldSchema) {
+    console.log("[DB] Migrating 'mayors' table to new schema...");
+    db.exec("DROP TABLE mayors");
+  }
+
+  db.exec(`
     -- Table to track SkyBlock mayors
     CREATE TABLE IF NOT EXISTS mayors (
       name TEXT NOT NULL,
