@@ -615,24 +615,29 @@ export function getUnifiedHistory(productIdStr: string) {
                                       // daily: everything older than 2mo
 
   // Query each tier within its time range only, ordered ASC for chronological stitching
-  const daily   = db.prepare('SELECT * FROM daily_prices WHERE product_id = ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t6);
-  const hourly  = db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t6, t5);
-  const thirtyM = db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t5, t4);
-  const tenM    = db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t4, t3);
-  const fiveM   = db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t3, t2);
-  const oneM    = db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC').all(pId, t2, t1);
-  const raw     = db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t1);
+  // Query each tier within its time range only. 
+  // By omitting the upper bounds and using a Map, lower resolution tiers act as a fallback 
+  // for ANY gaps in higher resolution tiers, completely fixing missing data outages.
+  const daily   = db.prepare('SELECT * FROM daily_prices WHERE product_id = ? ORDER BY timestamp ASC').all(pId) as any[];
+  const hourly  = db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t6) as any[];
+  const thirtyM = db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t5) as any[];
+  const tenM    = db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t4) as any[];
+  const fiveM   = db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t3) as any[];
+  const oneM    = db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t2) as any[];
+  const raw     = db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t1) as any[];
 
-  // Stitch together in chronological order (already sorted ASC per-tier)
-  const unified = [
-    ...daily.map(normalize),
-    ...hourly.map(normalize),
-    ...thirtyM.map(normalize),
-    ...tenM.map(normalize),
-    ...fiveM.map(normalize),
-    ...oneM.map(normalize),
-    ...raw.map(normalize),
-  ];
+  // Stitch together in chronological order, deduplicating and overwriting by timestamp.
+  // Since we insert from lowest resolution (daily) to highest (raw), 
+  // higher resolution points naturally take precedence if timestamps exactly match.
+  const map = new Map<number, any>();
+  
+  for (const arr of [daily, hourly, thirtyM, tenM, fiveM, oneM, raw]) {
+    for (const row of arr) {
+      map.set(row.timestamp, normalize(row));
+    }
+  }
+
+  const unified = Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
 
   return unified;
 }
