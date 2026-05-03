@@ -11,6 +11,8 @@ import {
   ProductPrice 
 } from './db';
 
+import { seedLegacyMayors } from './seed';
+
 const BAZAAR_API_URL = 'https://api.hypixel.net/v2/skyblock/bazaar';
 const MAYOR_API_URL = 'https://api.hypixel.net/v2/resources/skyblock/election';
 const POLL_INTERVAL_MS = 20 * 1000; // 20 seconds
@@ -178,6 +180,9 @@ async function runTracker() {
     // Log heartbeat for status page
     logHeartbeat('tracker');
   };
+
+  // Seed legacy mayors if needed
+  await seedLegacyMayors();
 
   // Run immediately, then interval
   await tick();
