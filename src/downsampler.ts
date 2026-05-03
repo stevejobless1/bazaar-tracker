@@ -1,21 +1,22 @@
 import { 
-  getRawPricesOlderThan, 
-  deleteRawPricesOlderThan, 
-  getOneMinPricesOlderThan,
-  deleteOneMinPricesOlderThan,
-  getFiveMinPricesOlderThan,
-  deleteFiveMinPricesOlderThan,
-  getTenMinPricesOlderThan,
-  deleteTenMinPricesOlderThan,
-  getThirtyMinPricesOlderThan,
-  deleteThirtyMinPricesOlderThan,
+  getRawPricesOlderThanForProduct,
+  deleteRawPricesOlderThanForProduct,
+  getOneMinPricesOlderThanForProduct,
+  deleteOneMinPricesOlderThanForProduct,
+  getFiveMinPricesOlderThanForProduct,
+  deleteFiveMinPricesOlderThanForProduct,
+  getTenMinPricesOlderThanForProduct,
+  deleteTenMinPricesOlderThanForProduct,
+  getThirtyMinPricesOlderThanForProduct,
+  deleteThirtyMinPricesOlderThanForProduct,
   bulkInsertOneMinPrices,
   bulkInsertFiveMinPrices,
   bulkInsertTenMinPrices,
   bulkInsertThirtyMinPrices,
   bulkInsertHourlyPrices,
   vacuumDB,
-  logHeartbeat
+  logHeartbeat,
+  getAllProductsStmt
 } from './db';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -119,89 +120,79 @@ function condenseData(rows: any[], intervalMs: number): any[] {
 export function runDownsampler() {
   console.log('[Downsampler] Starting multi-tier downsampling...');
 
-  // --- Tier 1: Raw (20s) -> 1-Minute (after 1 day) ---
-  const tier1Cutoff = Date.now() - ONE_DAY_MS;
-  const rawData = getRawPricesOlderThan(tier1Cutoff);
-  if (rawData.length > 0) {
-    console.log(`[Downsampler] Tier 1: Condensing ${rawData.length} raw records into 1m candles...`);
-    const oneMinCandles = condenseData(rawData, ONE_MINUTE_MS);
-    try {
-      bulkInsertOneMinPrices(oneMinCandles);
-      deleteRawPricesOlderThan(tier1Cutoff);
-      console.log(`[Downsampler] Tier 1 Complete: Created ${oneMinCandles.length} 1m candles.`);
-    } catch (err) {
-      console.error('[Downsampler] Tier 1 Error:', err);
+  const products = getAllProductsStmt.all() as { id: number; product_id: string }[];
+  console.log(`[Downsampler] Processing ${products.length} products...`);
+
+  for (const product of products) {
+    const pId = product.id;
+
+    // --- Tier 1: Raw (20s) -> 1-Minute (after 1 day) ---
+    const tier1Cutoff = Date.now() - ONE_DAY_MS;
+    const rawData = getRawPricesOlderThanForProduct(pId, tier1Cutoff);
+    if (rawData.length > 0) {
+      const oneMinCandles = condenseData(rawData, ONE_MINUTE_MS);
+      try {
+        bulkInsertOneMinPrices(oneMinCandles);
+        deleteRawPricesOlderThanForProduct(pId, tier1Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 1 Error for ${product.product_id}:`, err);
+      }
+    }
+
+    // --- Tier 2: 1-Minute -> 5-Minute (after 3 days) ---
+    const tier2Cutoff = Date.now() - THREE_DAYS_MS;
+    const oneMinData = getOneMinPricesOlderThanForProduct(pId, tier2Cutoff);
+    if (oneMinData.length > 0) {
+      const fiveMinCandles = condenseData(oneMinData, FIVE_MINUTES_MS);
+      try {
+        bulkInsertFiveMinPrices(fiveMinCandles);
+        deleteOneMinPricesOlderThanForProduct(pId, tier2Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 2 Error for ${product.product_id}:`, err);
+      }
+    }
+
+    // --- Tier 3: 5-Minute -> 10-Minute (after 1 week) ---
+    const tier3Cutoff = Date.now() - ONE_WEEK_MS;
+    const fiveMinData = getFiveMinPricesOlderThanForProduct(pId, tier3Cutoff);
+    if (fiveMinData.length > 0) {
+      const tenMinCandles = condenseData(fiveMinData, TEN_MINUTES_MS);
+      try {
+        bulkInsertTenMinPrices(tenMinCandles);
+        deleteFiveMinPricesOlderThanForProduct(pId, tier3Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 3 Error for ${product.product_id}:`, err);
+      }
+    }
+
+    // --- Tier 4: 10-Minute -> 30-Minute (after 2 weeks) ---
+    const tier4Cutoff = Date.now() - TWO_WEEKS_MS;
+    const tenMinData = getTenMinPricesOlderThanForProduct(pId, tier4Cutoff);
+    if (tenMinData.length > 0) {
+      const thirtyMinCandles = condenseData(tenMinData, THIRTY_MINUTES_MS);
+      try {
+        bulkInsertThirtyMinPrices(thirtyMinCandles);
+        deleteTenMinPricesOlderThanForProduct(pId, tier4Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 4 Error for ${product.product_id}:`, err);
+      }
+    }
+
+    // --- Tier 5: 30-Minute -> 1-Hour (after 4 weeks) ---
+    const tier5Cutoff = Date.now() - FOUR_WEEKS_MS;
+    const thirtyMinData = getThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
+    if (thirtyMinData.length > 0) {
+      const hourlyCandles = condenseData(thirtyMinData, ONE_HOUR_MS);
+      try {
+        bulkInsertHourlyPrices(hourlyCandles);
+        deleteThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
+      } catch (err) {
+        console.error(`[Downsampler] Tier 5 Error for ${product.product_id}:`, err);
+      }
     }
   }
 
-  // --- Tier 2: 1-Minute -> 5-Minute (after 3 days) ---
-  const tier2Cutoff = Date.now() - THREE_DAYS_MS;
-  const oneMinData = getOneMinPricesOlderThan(tier2Cutoff);
-  if (oneMinData.length > 0) {
-    console.log(`[Downsampler] Tier 2: Condensing ${oneMinData.length} 1m records into 5m candles...`);
-    const fiveMinCandles = condenseData(oneMinData, FIVE_MINUTES_MS);
-    try {
-      bulkInsertFiveMinPrices(fiveMinCandles);
-      deleteOneMinPricesOlderThan(tier2Cutoff);
-      console.log(`[Downsampler] Tier 2 Complete: Created ${fiveMinCandles.length} 5m candles.`);
-    } catch (err) {
-      console.error('[Downsampler] Tier 2 Error:', err);
-    }
-  }
-
-  // --- Tier 3: 5-Minute -> 10-Minute (after 1 week) ---
-  const tier3Cutoff = Date.now() - ONE_WEEK_MS;
-  const fiveMinData = getFiveMinPricesOlderThan(tier3Cutoff);
-  if (fiveMinData.length > 0) {
-    console.log(`[Downsampler] Tier 3: Condensing ${fiveMinData.length} 5m records into 10m candles...`);
-    const tenMinCandles = condenseData(fiveMinData, TEN_MINUTES_MS);
-    try {
-      bulkInsertTenMinPrices(tenMinCandles);
-      deleteFiveMinPricesOlderThan(tier3Cutoff);
-      console.log(`[Downsampler] Tier 3 Complete: Created ${tenMinCandles.length} 10m candles.`);
-    } catch (err) {
-      console.error('[Downsampler] Tier 3 Error:', err);
-    }
-  }
-
-  // --- Tier 4: 10-Minute -> 30-Minute (after 2 weeks) ---
-  const tier4Cutoff = Date.now() - TWO_WEEKS_MS;
-  const tenMinData = getTenMinPricesOlderThan(tier4Cutoff);
-  if (tenMinData.length > 0) {
-    console.log(`[Downsampler] Tier 4: Condensing ${tenMinData.length} 10m records into 30m candles...`);
-    const thirtyMinCandles = condenseData(tenMinData, THIRTY_MINUTES_MS);
-    try {
-      bulkInsertThirtyMinPrices(thirtyMinCandles);
-      deleteTenMinPricesOlderThan(tier4Cutoff);
-      console.log(`[Downsampler] Tier 4 Complete: Created ${thirtyMinCandles.length} 30m candles.`);
-    } catch (err) {
-      console.error('[Downsampler] Tier 4 Error:', err);
-    }
-  }
-
-  // --- Tier 5: 30-Minute -> 1-Hour (after 4 weeks) ---
-  const tier5Cutoff = Date.now() - FOUR_WEEKS_MS;
-  const thirtyMinData = getThirtyMinPricesOlderThan(tier5Cutoff);
-  if (thirtyMinData.length > 0) {
-    console.log(`[Downsampler] Tier 5: Condensing ${thirtyMinData.length} 30m records into 1h candles...`);
-    const hourlyCandles = condenseData(thirtyMinData, ONE_HOUR_MS);
-    try {
-      bulkInsertHourlyPrices(hourlyCandles);
-      deleteThirtyMinPricesOlderThan(tier5Cutoff);
-      console.log(`[Downsampler] Tier 5 Complete: Created ${hourlyCandles.length} 1h candles.`);
-    } catch (err) {
-      console.error('[Downsampler] Tier 5 Error:', err);
-    }
-  }
-
-  // --- Tier 6: 1-Hour Retention (Cleanup after 1 month as per request, but user also said "for ever") ---
-  // I will implement the 1-month deletion but keep it easy to disable if they meant forever.
-  // Actually, "its for every" usually means "forever" in this context.
-  // BUT they said "1h 1 month". I'll stick to 1 month for now to be safe with storage.
-  const tier6Cutoff = Date.now() - ONE_MONTH_MS;
-  // We don't have a getHourlyPricesOlderThan yet, but I can add it or just run a direct query.
-  // Let's add it to db.ts if needed, or just do it here.
-  // Actually, I'll skip deleting hourly for now since "forever" was mentioned.
+  console.log('[Downsampler] All tiers complete for all products.');
   
   // Optimize database after cleaning up
   vacuumDB();

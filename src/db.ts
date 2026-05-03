@@ -11,6 +11,8 @@ export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 // Synchronous mode NORMAL is safe with WAL and faster than FULL
 db.pragma('synchronous = NORMAL');
+// Set a busy timeout to wait for the lock instead of failing immediately
+db.pragma('busy_timeout = 5000');
 
 // Initialize database schema
 export function initDB() {
@@ -149,9 +151,27 @@ export function initDB() {
       FOREIGN KEY (product_id) REFERENCES products(id),
       UNIQUE(product_id, timestamp)
     );
-    CREATE INDEX IF NOT EXISTS idx_ten_min_prices_product_time ON ten_min_prices(product_id, timestamp);
-
-
+    CREATE TABLE IF NOT EXISTS thirty_min_prices (
+      timestamp INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      buy_open REAL,
+      buy_high REAL,
+      buy_low REAL,
+      buy_close REAL,
+      sell_open REAL,
+      sell_high REAL,
+      sell_low REAL,
+      sell_close REAL,
+      avg_buy_volume INTEGER,
+      avg_sell_volume INTEGER,
+      avg_buy_orders INTEGER,
+      avg_sell_orders INTEGER,
+      avg_buy_moving_week INTEGER,
+      avg_sell_moving_week INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      UNIQUE(product_id, timestamp)
+    );
+    CREATE INDEX IF NOT EXISTS idx_thirty_min_prices_product_time ON thirty_min_prices(product_id, timestamp);
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id INTEGER PRIMARY KEY,
       buy_summary TEXT,
@@ -194,7 +214,7 @@ initDB();
 
 const insertProductStmt = db.prepare('INSERT OR IGNORE INTO products (product_id) VALUES (?)');
 const getProductIdStmt = db.prepare('SELECT id FROM products WHERE product_id = ?');
-const getAllProductsStmt = db.prepare('SELECT id, product_id FROM products');
+export const getAllProductsStmt = db.prepare('SELECT id, product_id FROM products');
 const insertPriceStmt = db.prepare(`
   INSERT INTO prices (
     timestamp, product_id, buy_price, sell_price, 
@@ -328,40 +348,80 @@ export function getRawPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM prices WHERE timestamp < ?').all(timestampMs);
 }
 
+export function getRawPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
 export function deleteRawPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM prices WHERE timestamp < ?').run(timestampMs);
+}
+
+export function deleteRawPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
 export function getOneMinPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM one_min_prices WHERE timestamp < ?').all(timestampMs);
 }
 
+export function getOneMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
 export function deleteOneMinPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM one_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
+export function deleteOneMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM one_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
 export function getFiveMinPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM five_min_prices WHERE timestamp < ?').all(timestampMs);
 }
 
+export function getFiveMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
 export function deleteFiveMinPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM five_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
+export function deleteFiveMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM five_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
 export function getTenMinPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM ten_min_prices WHERE timestamp < ?').all(timestampMs);
 }
 
+export function getTenMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
 export function deleteTenMinPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM ten_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
+export function deleteTenMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM ten_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
 export function getThirtyMinPricesOlderThan(timestampMs: number): any[] {
   return db.prepare('SELECT * FROM thirty_min_prices WHERE timestamp < ?').all(timestampMs);
 }
 
+export function getThirtyMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
+  return db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
+}
+
 export function deleteThirtyMinPricesOlderThan(timestampMs: number) {
   db.prepare('DELETE FROM thirty_min_prices WHERE timestamp < ?').run(timestampMs);
+}
+
+export function deleteThirtyMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
+  db.prepare('DELETE FROM thirty_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
 }
 
 export const bulkInsertOneMinPrices = db.transaction((data: any[]) => {
