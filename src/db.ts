@@ -425,14 +425,27 @@ export function logHeartbeat(serviceName: string) {
   db.prepare('DELETE FROM service_heartbeats WHERE timestamp < ?').run(ninetyDaysAgo);
 }
 
-export function getUptimeHistory(serviceName: string, days: number = 30) {
+export function getUptimeHistory(serviceName: string) {
+  const oldestHeartbeat = (db.prepare('SELECT MIN(timestamp) as ts FROM service_heartbeats WHERE service_name = ?').get(serviceName) as any)?.ts;
+  if (!oldestHeartbeat) return [];
+
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
+  
+  // Calculate days from the first heartbeat to today
+  const firstDayDate = new Date(oldestHeartbeat).setHours(0, 0, 0, 0);
+  const todayDate = new Date(now).setHours(0, 0, 0, 0);
+  const daysSinceStart = Math.round((todayDate - firstDayDate) / dayMs) + 1;
+  
+  // Cap at a reasonable number for the UI if necessary, but the user asked for full history
+  // Let's provide up to 90 days of history (matching our retention)
+  const daysToFetch = Math.min(daysSinceStart, 90);
+  
   const history = [];
 
-  for (let i = 0; i < days; i++) {
-    const end = now - (i * dayMs);
-    const start = end - dayMs;
+  for (let i = 0; i < daysToFetch; i++) {
+    const end = todayDate - (i * dayMs) + dayMs;
+    const start = todayDate - (i * dayMs);
     
     // Count heartbeats in this 24h window
     // Assuming 1 heartbeat per minute = 1440 expected
@@ -604,9 +617,9 @@ export function getStatusStats(forceRefresh = false) {
       serverStartedAt: serverStartTime,
       uptimeMs: Date.now() - serverStartTime,
       history: {
-        tracker: getUptimeHistory('tracker', 30),
-        api: getUptimeHistory('api', 30),
-        downsampler: getUptimeHistory('downsampler', 30)
+        tracker: getUptimeHistory('tracker'),
+        api: getUptimeHistory('api'),
+        downsampler: getUptimeHistory('downsampler')
       }
     }
   };
