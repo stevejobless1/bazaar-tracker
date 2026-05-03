@@ -14,7 +14,8 @@ import {
   getLiveOrders, 
   getStatusStats,
   getMayorsInRange,
-  logHeartbeat
+  logHeartbeat,
+  db
 } from './db';
 
 const app = express();
