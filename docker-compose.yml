@@ -53,20 +53,6 @@ services:
       retries: 3
       start_period: 10s
 
-  # The ML Prediction Engine
-  ml-api:
-    build: ../bazaar-ml
-    ports:
-      - "5001:5001"
-    environment:
-      - PORT=5001
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
 
 volumes:
   bazaar-data:

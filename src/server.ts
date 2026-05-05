@@ -254,7 +254,7 @@ import path from 'path';
 import fs from 'fs';
 
 app.get('/api/ml/client', (req, res) => {
-  const zipPath = path.join(__dirname, '../../bazaar-ml-client.zip');
+  const zipPath = path.join(__dirname, '../assets/bazaar-ml-client.zip');
   if (fs.existsSync(zipPath)) {
     res.download(zipPath, 'bazaar-ml-client.zip');
   } else {
