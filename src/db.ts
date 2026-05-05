@@ -755,8 +755,8 @@ export function getVolumeHistory(productId: string, startTs: number, endTs: numb
   const rows = db.prepare(`
     SELECT 
       (timestamp / ?) * ? as bucket,
-      SUM(buy_volume_delta) as buy_volume,
-      SUM(sell_volume_delta) as sell_volume
+      SUM(buy_volume_delta) as buyVolume,
+      SUM(sell_volume_delta) as sellVolume
     FROM volume_history
     WHERE product_id = ? AND timestamp >= ? AND timestamp <= ?
     GROUP BY bucket

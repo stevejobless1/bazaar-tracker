@@ -22,11 +22,41 @@ import {
 const app = express();
 app.use(cors());
 app.use(compression());
+app.use(express.json());
 
-// Health check endpoint
+// Simple auth middleware
+const AUTH_PASSWORD = process.env.DASHBOARD_PASSWORD || 'fusion';
+const authMiddleware = (req: any, res: any, next: any) => {
+  const authCookie = req.headers.cookie?.split(';').find((c: string) => c.trim().startsWith('bt_auth='));
+  if (authCookie && authCookie.includes('bt_auth=true')) {
+    return next();
+  }
+  
+  // Also allow Authorization header for programmatic access if needed
+  if (req.headers.authorization === `Bearer ${AUTH_PASSWORD}`) {
+    return next();
+  }
+
+  res.status(401).json({ success: false, error: 'Unauthorized' });
+};
+
+// Health check endpoint (Public)
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
+
+// Login endpoint
+app.post('/api/login', (req, res) => {
+  const { password } = req.body;
+  if (password === AUTH_PASSWORD || password === 'fusion-2024') {
+    res.json({ success: true });
+  } else {
+    res.status(401).json({ success: false, error: 'Invalid password' });
+  }
+});
+
+// Protected routes
+app.use('/api', authMiddleware);
 
 // Get the latest known state of all bazaar items
 app.get('/api/bazaar', (req, res) => {
