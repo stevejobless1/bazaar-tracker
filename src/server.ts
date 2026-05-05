@@ -209,28 +209,59 @@ app.get('/api/mayors', (req, res) => {
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-// ML Predictions Proxy
-app.get('/api/ml/*', async (req, res) => {
+// Local memory for ML predictions uploaded by clients
+let uploadedPredictions: any = { items: [], total: 0 };
+
+app.post('/api/ml/upload', (req, res) => {
   try {
-    const mlPath = req.params[0];
-    const query = req.url.split('?')[1] || '';
-    
-    // Allow overriding the ML API URL (e.g. to point to Hugging Face)
-    const baseUrl = process.env.ML_API_URL || 'http://ml-api:5001';
-    const targetUrl = `${baseUrl}/${mlPath}${query ? '?' + query : ''}`;
-    
-    console.log(`[Proxy] Forwarding ML request: ${targetUrl}`);
-    const response = await axios.get(targetUrl, { timeout: 15000 });
-    res.json(response.data);
-  } catch (err: any) {
-    console.error(`[Proxy] ML Error: ${err.message}`);
-    res.status(err.response?.status || 500).json({ 
-      success: false, 
-      error: 'ML service error', 
-      details: err.message 
-    });
+    uploadedPredictions = req.body;
+    console.log(`[ML] Received uploaded predictions. Total items: ${uploadedPredictions.total || 0}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
+app.get('/api/ml/predictions', (req, res) => {
+  const limit = parseInt(req.query.limit as string) || 100;
+  const minScore = parseFloat(req.query.min_score as string) || 0.0;
+  
+  if (!uploadedPredictions.items) {
+     return res.json({ items: [], total: 0 });
+  }
+  
+  const filtered = uploadedPredictions.items
+    .filter((p: any) => p.entry_score > minScore)
+    .slice(0, limit);
+    
+  res.json({ items: filtered, total: filtered.length });
+});
+
+app.get('/api/ml/predict/:productId', (req, res) => {
+  const productId = req.params.productId;
+  if (!uploadedPredictions.items) {
+     return res.status(404).json({ error: 'No predictions available' });
+  }
+  const item = uploadedPredictions.items.find((p: any) => p.item_id === productId);
+  if (!item) {
+     return res.status(404).json({ error: 'Prediction not found for item' });
+  }
+  res.json(item);
+});
+
+import path from 'path';
+import fs from 'fs';
+
+app.get('/api/ml/client', (req, res) => {
+  const zipPath = path.join(__dirname, '../../bazaar-ml-client.zip');
+  if (fs.existsSync(zipPath)) {
+    res.download(zipPath, 'bazaar-ml-client.zip');
+  } else {
+    res.status(404).send('Client bundle not found');
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);
