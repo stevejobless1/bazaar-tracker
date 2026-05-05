@@ -207,6 +207,16 @@ export function initDB() {
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_heartbeats_service_time ON service_heartbeats(service_name, timestamp);
+
+    -- Accurate Volume History (Captures deltas between snapshots)
+    CREATE TABLE IF NOT EXISTS volume_history (
+      product_id INTEGER NOT NULL,
+      timestamp INTEGER NOT NULL,
+      buy_volume_delta INTEGER,
+      sell_volume_delta INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_volume_history_product_time ON volume_history(product_id, timestamp);
   `);
 
   // Migration: Check if mayors table has the old 'timestamp' column instead of 'start_date'
@@ -729,6 +739,35 @@ export function getMayorsInRange(startTs: number, endTs: number): { start_date: 
 export function vacuumDB() {
   console.log('[DB] Running VACUUM to reclaim space...');
   db.pragma('vacuum');
+}
+
+
+// --- VOLUME FUNCTIONS ---
+
+export function insertVolumeDelta(productId: string, timestamp: number, buyDelta: number, sellDelta: number) {
+  if (buyDelta <= 0 && sellDelta <= 0) return;
+  const pId = getProductId(productId);
+  db.prepare('INSERT INTO volume_history (product_id, timestamp, buy_volume_delta, sell_volume_delta) VALUES (?, ?, ?, ?)').run(pId, timestamp, buyDelta, sellDelta);
+}
+
+export function getVolumeHistory(productId: string, startTs: number, endTs: number, interval: number = 3600000) {
+  const pId = getProductId(productId);
+  const rows = db.prepare(`
+    SELECT 
+      (timestamp / ?) * ? as bucket,
+      SUM(buy_volume_delta) as buy_volume,
+      SUM(sell_volume_delta) as sell_volume
+    FROM volume_history
+    WHERE product_id = ? AND timestamp >= ? AND timestamp <= ?
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `).all(interval, interval, pId, startTs, endTs) as any[];
+
+  return rows.map(r => ({
+    timestamp: r.bucket,
+    buyVolume: r.buy_volume || 0,
+    sellVolume: r.sell_volume || 0
+  }));
 }
 
 

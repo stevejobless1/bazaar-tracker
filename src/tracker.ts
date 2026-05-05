@@ -7,6 +7,7 @@ import {
   logHeartbeat,
   insertMayor,
   getLastMayor,
+  insertVolumeDelta,
   LiveOrderSummaries,
   ProductPrice 
 } from './db';
@@ -116,13 +117,17 @@ async function runTracker() {
       let buyVolumeDelta = 0;
       let sellVolumeDelta = 0;
       if (previous) {
-        // Hypixel volume is a 7-day rolling sum. 
-        // A positive delta means items were traded in the last 20s.
-        buyVolumeDelta = Math.max(0, currentBuyVolume - previous.buyVolume);
-        sellVolumeDelta = Math.max(0, currentSellVolume - previous.sellVolume);
+        // Hypixel movingWeek is a 7-day rolling trade sum. 
+        // A positive delta means items were TRADED in the last 20s.
+        // buyMovingWeek delta = People buying from bazaar (filling sell orders)
+        // sellMovingWeek delta = People selling to bazaar (filling buy orders)
+        buyVolumeDelta = Math.max(0, currentBuyMovingWeek - previous.buyMovingWeek);
+        sellVolumeDelta = Math.max(0, currentSellMovingWeek - previous.sellMovingWeek);
         
-        // Note: If delta is > 0, it indicates real-time market activity.
-        // In a future update, we will store these deltas in a 'volume_history' table.
+        // Save accurate volume deltas for the chart
+        if (buyVolumeDelta > 0 || sellVolumeDelta > 0) {
+          insertVolumeDelta(productId, timestamp, buyVolumeDelta, sellVolumeDelta);
+        }
       }
 
       // Delta logic: Only save if any of the core indicators change

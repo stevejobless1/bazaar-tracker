@@ -14,6 +14,7 @@ import {
   getLiveOrders, 
   getStatusStats,
   getMayorsInRange,
+  getVolumeHistory,
   logHeartbeat,
   db
 } from './db';
@@ -132,6 +133,22 @@ app.get('/api/bazaar/orders/:productId', (req, res) => {
     }
 
     res.json({ success: true, product_id: productId, buy_summary: orders.buy_summary, sell_summary: orders.sell_summary });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Get volume history for a specific product
+app.get('/api/bazaar/volume/:productId', (req, res) => {
+  try {
+    const productId = req.params.productId;
+    const start = parseInt(req.query.start as string) || (Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = parseInt(req.query.end as string) || Date.now();
+    const interval = parseInt(req.query.interval as string) || 3600000; // Default 1 hour
+
+    const history = getVolumeHistory(productId, start, end, interval);
+    res.json({ success: true, product_id: productId, data: history });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
