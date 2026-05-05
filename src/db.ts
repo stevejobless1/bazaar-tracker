@@ -746,12 +746,12 @@ export function vacuumDB() {
 
 export function insertVolumeDelta(productId: string, timestamp: number, buyDelta: number, sellDelta: number) {
   if (buyDelta <= 0 && sellDelta <= 0) return;
-  const pId = getProductId(productId);
+  const pId = getOrCreateProductId(productId);
   db.prepare('INSERT INTO volume_history (product_id, timestamp, buy_volume_delta, sell_volume_delta) VALUES (?, ?, ?, ?)').run(pId, timestamp, buyDelta, sellDelta);
 }
 
 export function getVolumeHistory(productId: string, startTs: number, endTs: number, interval: number = 3600000) {
-  const pId = getProductId(productId);
+  const pId = getOrCreateProductId(productId);
   const rows = db.prepare(`
     SELECT 
       (timestamp / ?) * ? as bucket,
