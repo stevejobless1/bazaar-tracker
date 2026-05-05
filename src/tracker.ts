@@ -112,6 +112,19 @@ async function runTracker() {
 
       const previous = lastState.get(productId);
 
+      // Volume Delta Logic (Preparing for hour-by-hour tracking)
+      let buyVolumeDelta = 0;
+      let sellVolumeDelta = 0;
+      if (previous) {
+        // Hypixel volume is a 7-day rolling sum. 
+        // A positive delta means items were traded in the last 20s.
+        buyVolumeDelta = Math.max(0, currentBuyVolume - previous.buyVolume);
+        sellVolumeDelta = Math.max(0, currentSellVolume - previous.sellVolume);
+        
+        // Note: If delta is > 0, it indicates real-time market activity.
+        // In a future update, we will store these deltas in a 'volume_history' table.
+      }
+
       // Delta logic: Only save if any of the core indicators change
       let hasChanged = true;
       if (previous) {
