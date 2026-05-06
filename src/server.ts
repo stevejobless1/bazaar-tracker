@@ -13,6 +13,7 @@ import {
   getDailyHistory,
   getUnifiedHistory,
   getLiveOrders, 
+  getLiveOrdersBulk,
   getStatusStats,
   getMayorsInRange,
   getVolumeHistory,
@@ -164,6 +165,22 @@ app.get('/api/bazaar/orders/:productId', (req, res) => {
     }
 
     res.json({ success: true, product_id: productId, buy_summary: orders.buy_summary, sell_summary: orders.sell_summary });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Get live order book for multiple products (bulk)
+app.get('/api/bazaar/orders/bulk', (req, res) => {
+  try {
+    const idsString = req.query.ids as string;
+    if (!idsString) {
+      return res.status(400).json({ success: false, error: 'Missing product ids parameter' });
+    }
+    const productIds = idsString.split(',');
+    const results = getLiveOrdersBulk(productIds);
+    res.json({ success: true, data: results });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });

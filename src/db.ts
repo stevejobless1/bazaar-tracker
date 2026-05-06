@@ -675,6 +675,33 @@ export function getLiveOrders(productIdStr: string): any {
   };
 }
 
+export function getLiveOrdersBulk(productIdStrs: string[]): Record<string, any> {
+  const result: Record<string, any> = {};
+  if (productIdStrs.length === 0) return result;
+
+  // better-sqlite3 doesn't easily support dynamic IN clauses in prepared statements 
+  // with a fixed number of parameters, so we'll build it manually or use a loop.
+  // Since we have an in-memory cache of product IDs, we can use that to speed up.
+  const pIds = productIdStrs.map(id => productCache.get(id)).filter(id => id !== undefined);
+  if (pIds.length === 0) return result;
+
+  const placeholders = pIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT p.product_id, lo.buy_summary, lo.sell_summary 
+    FROM live_orders lo
+    JOIN products p ON lo.product_id = p.id
+    WHERE lo.product_id IN (${placeholders})
+  `).all(...pIds) as any[];
+
+  for (const row of rows) {
+    result[row.product_id] = {
+      buy_summary: JSON.parse(row.buy_summary),
+      sell_summary: JSON.parse(row.sell_summary)
+    };
+  }
+  return result;
+}
+
 export function logHeartbeat(serviceName: string) {
   db.prepare('INSERT INTO service_heartbeats (service_name, timestamp) VALUES (?, ?)').run(serviceName, Date.now());
 }
