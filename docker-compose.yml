@@ -18,7 +18,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
   # The REST API
   api:
@@ -39,7 +39,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
   # The Hourly Downsampler
   downsampler:
@@ -57,7 +57,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
 
 
 volumes:
