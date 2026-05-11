@@ -16,6 +16,17 @@ db.pragma('busy_timeout = 5000');
 
 // Initialize database schema
 export function initDB() {
+  // Fresh start: drop all tables if WIPE_DB is set
+  if (process.env.WIPE_DB === 'true') {
+    console.log('[DB] ⚠️  WIPE_DB=true — Dropping ALL tables for fresh start...');
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+    for (const { name } of tables) {
+      db.exec(`DROP TABLE IF EXISTS "${name}"`);
+      console.log(`[DB]   Dropped table: ${name}`);
+    }
+    console.log('[DB] All tables dropped. Recreating schema...');
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

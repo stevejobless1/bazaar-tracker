@@ -10,6 +10,8 @@ services:
     environment:
       - DB_PATH=/app/data/bazaar.db
       - HYPIXEL_API_KEY=${HYPIXEL_API_KEY}
+      - WIPE_DB=${WIPE_DB:-false}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
     restart: always
     healthcheck:
       test: ["CMD", "node", "dist/healthcheck.js", "tracker"]
@@ -29,6 +31,8 @@ services:
     environment:
       - DB_PATH=/app/data/bazaar.db
       - PORT=3000
+      - WIPE_DB=${WIPE_DB:-false}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
     restart: always
     healthcheck:
       test: ["CMD", "node", "dist/healthcheck.js", "api"]
@@ -37,7 +41,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # The Daily Downsampler
+  # The Hourly Downsampler
   downsampler:
     build: .
     command: npm run start:downsampler
@@ -45,6 +49,8 @@ services:
       - bazaar-data:/app/data
     environment:
       - DB_PATH=/app/data/bazaar.db
+      - WIPE_DB=${WIPE_DB:-false}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
     restart: always
     healthcheck:
       test: ["CMD", "node", "dist/healthcheck.js", "downsampler"]
@@ -56,3 +62,4 @@ services:
 
 volumes:
   bazaar-data:
+
