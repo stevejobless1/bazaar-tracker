@@ -20,11 +20,23 @@ import {
   logHeartbeat,
   db
 } from './db';
+import { notifyError, notifySuccess } from './discord';
 
 const app = express();
 app.use(cors());
 app.use(compression());
 app.use(express.json());
+
+// Request timeout middleware — prevent slow queries from hanging
+app.use((req, res, next) => {
+  res.setTimeout(30000, () => {
+    console.error(`[Server] Request timeout: ${req.method} ${req.path}`);
+    if (!res.headersSent) {
+      res.status(504).json({ success: false, error: 'Request timeout' });
+    }
+  });
+  next();
+});
 
 // Simple auth middleware
 const AUTH_PASSWORD = process.env.DASHBOARD_PASSWORD || 'fusion';
@@ -81,7 +93,7 @@ app.get('/api/bazaar', (req, res) => {
     }
     res.json({ success: true, products: result });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -90,40 +102,30 @@ app.get('/api/bazaar', (req, res) => {
 app.get('/api/bazaar/history/:productId', (req, res) => {
   try {
     const productId = req.params.productId;
-    // Query param to specify resolution: 'raw', '5m', or '1h' (defaults to 'raw')
     const resolution = req.query.resolution as string || (req.query.hourly === 'true' ? '1h' : 'raw');
     const limit = parseInt(req.query.limit as string) || 1000;
 
-    if (resolution === '1d') {
-      const history = getDailyHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '1d', data: history });
-    } else if (resolution === '1h') {
-      const history = getHourlyHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '1h', data: history });
-    } else if (resolution === '10m') {
-      const history = getTenMinHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '10m', data: history });
-    } else if (resolution === '30m') {
-      const history = getThirtyMinHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '30m', data: history });
-    } else if (resolution === '5m') {
-      const history = getFiveMinHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '5m', data: history });
-    } else if (resolution === '1m') {
-      const history = getOneMinHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: '1m', data: history });
-    } else {
-      const history = getRecentHistory(productId, limit);
-      res.json({ success: true, product_id: productId, resolution: 'raw', data: history });
+    let history: any[];
+    let resolvedResolution = resolution;
+
+    switch (resolution) {
+      case '1d': history = getDailyHistory(productId, limit); break;
+      case '1h': history = getHourlyHistory(productId, limit); break;
+      case '30m': history = getThirtyMinHistory(productId, limit); break;
+      case '10m': history = getTenMinHistory(productId, limit); break;
+      case '5m': history = getFiveMinHistory(productId, limit); break;
+      case '1m': history = getOneMinHistory(productId, limit); break;
+      default: history = getRecentHistory(productId, limit); resolvedResolution = 'raw'; break;
     }
+
+    res.json({ success: true, product_id: productId, resolution: resolvedResolution, data: history });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar/history error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
 // Unified history endpoint - stitches all resolution tiers into one seamless timeline
-// Cached per-product for 30 seconds to avoid heavy queries on every poll
 const unifiedCache = new Map<string, { data: any; timestamp: number }>();
 const UNIFIED_CACHE_TTL = 30 * 1000; // 30 seconds
 
@@ -149,7 +151,7 @@ app.get('/api/bazaar/history/:productId/unified', (req, res) => {
 
     res.json({ success: true, product_id: productId, cached: false, data });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar/history/unified error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -166,7 +168,7 @@ app.get('/api/bazaar/orders/:productId', (req, res) => {
 
     res.json({ success: true, product_id: productId, buy_summary: orders.buy_summary, sell_summary: orders.sell_summary });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar/orders error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -182,7 +184,7 @@ app.get('/api/bazaar/orders/bulk', (req, res) => {
     const results = getLiveOrdersBulk(productIds);
     res.json({ success: true, data: results });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar/orders/bulk error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -198,7 +200,7 @@ app.get('/api/bazaar/volume/:productId', (req, res) => {
     const history = getVolumeHistory(productId, start, end, interval);
     res.json({ success: true, product_id: productId, data: history });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/bazaar/volume error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -209,7 +211,7 @@ app.get('/api/status', (req, res) => {
     const stats = getStatusStats();
     res.json({ success: true, ...stats, timestamp: Date.now() });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/status error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -222,7 +224,7 @@ app.get('/api/mayors', (req, res) => {
     const mayors = getMayorsInRange(start, end);
     res.json({ success: true, data: mayors });
   } catch (err) {
-    console.error(err);
+    console.error('[Server] /api/mayors error:', err);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -231,8 +233,20 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);
   
+  notifySuccess('api', 'API Server Started', `Listening on port ${PORT}`);
+  
   // Log heartbeat for status page every minute
   setInterval(() => logHeartbeat('api'), 60000);
   logHeartbeat('api');
 });
 
+// Global error handlers
+process.on('uncaughtException', (err) => {
+  console.error('[Server] UNCAUGHT EXCEPTION:', err);
+  notifyError('api', 'API Uncaught Exception', `\`\`\`\n${err.stack || err.message}\n\`\`\``);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] UNHANDLED REJECTION:', reason);
+  notifyError('api', 'API Unhandled Rejection', `\`\`\`\n${String(reason)}\n\`\`\``);
+});

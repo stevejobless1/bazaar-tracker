@@ -173,27 +173,7 @@ export function initDB() {
       FOREIGN KEY (product_id) REFERENCES products(id),
       UNIQUE(product_id, timestamp)
     );
-    CREATE TABLE IF NOT EXISTS thirty_min_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_thirty_min_prices_product_time ON thirty_min_prices(product_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_ten_min_prices_product_time ON ten_min_prices(product_id, timestamp);
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id INTEGER PRIMARY KEY,
       buy_summary TEXT,
@@ -763,9 +743,15 @@ export function getMayorsInRange(startTs: number, endTs: number): { start_date: 
   return db.prepare('SELECT * FROM mayors WHERE start_date >= ? AND start_date <= ? ORDER BY start_date ASC').all(startTs, endTs) as any;
 }
 
-export function vacuumDB() {
-  console.log('[DB] Running VACUUM to reclaim space...');
-  db.pragma('vacuum');
+// Incremental vacuum: non-blocking, safe for live systems
+export function incrementalVacuum() {
+  try {
+    db.pragma('auto_vacuum = INCREMENTAL');
+    db.pragma('incremental_vacuum(100)');
+    console.log('[DB] Incremental vacuum complete (100 pages freed).');
+  } catch (err) {
+    console.error('[DB] Incremental vacuum error:', err);
+  }
 }
 
 

@@ -17,11 +17,12 @@ import {
   bulkInsertThirtyMinPrices,
   bulkInsertHourlyPrices,
   bulkInsertDailyPrices,
-  vacuumDB,
+  incrementalVacuum,
   logHeartbeat,
   cleanupHeartbeats,
   getAllProductsStmt
 } from './db';
+import { notifyError, notifySuccess, notifyWarning, trackFailure, resetFailure } from './discord';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
@@ -36,8 +37,12 @@ const TEN_MINUTES_MS = 10 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
+// Run every hour instead of every 24 hours to keep data fresh
+const DOWNSAMPLER_INTERVAL_MS = ONE_HOUR_MS;
+
 /**
  * Generic function to downsample data from one resolution to another.
+ * Uses a safe delimiter '|' to avoid ambiguity with product_id or timestamp values.
  * @param rows The input rows to condense
  * @param intervalMs The target interval (e.g., 5m or 1h)
  */
@@ -48,8 +53,9 @@ function condenseData(rows: any[], intervalMs: number): any[] {
   
   for (const row of rows) {
     // Truncate timestamp to the target interval
-    const timestamp = Math.floor(row.timestamp / intervalMs) * intervalMs;
-    const key = `${row.product_id}-${timestamp}`;
+    const bucketTs = Math.floor(row.timestamp / intervalMs) * intervalMs;
+    // Use '|' delimiter to avoid any ambiguity with '-' in numbers
+    const key = `${row.product_id}|${bucketTs}`;
     
     if (!grouped.has(key)) {
       grouped.set(key, []);
@@ -62,9 +68,19 @@ function condenseData(rows: any[], intervalMs: number): any[] {
   for (const [key, groupRows] of grouped.entries()) {
     groupRows.sort((a, b) => a.timestamp - b.timestamp);
     
-    const [productIdStr, timestampStr] = key.split('-');
-    const productId = parseInt(productIdStr || '0', 10);
-    const timestamp = parseInt(timestampStr || '0', 10);
+    // Split on '|' — safe delimiter
+    const parts = key.split('|');
+    if (parts.length !== 2) {
+      console.error(`[Downsampler] Invalid key format: ${key}`);
+      continue;
+    }
+    const productId = parseInt(parts[0], 10);
+    const timestamp = parseInt(parts[1], 10);
+
+    if (isNaN(productId) || isNaN(timestamp)) {
+      console.error(`[Downsampler] Failed to parse key: ${key}`);
+      continue;
+    }
 
     const first = groupRows[0];
     const last = groupRows[groupRows.length - 1];
@@ -87,16 +103,22 @@ function condenseData(rows: any[], intervalMs: number): any[] {
 
       if (bPrice > buyHigh) buyHigh = bPrice;
       if (bPrice < buyLow) buyLow = bPrice;
-      buyVolSum += bVol;
-      buyOrdersSum += bOrders;
-      buyMovingWeekSum += bMW;
+      buyVolSum += bVol || 0;
+      buyOrdersSum += bOrders || 0;
+      buyMovingWeekSum += bMW || 0;
 
       if (sPrice > sellHigh) sellHigh = sPrice;
       if (sPrice < sellLow) sellLow = sPrice;
-      sellVolSum += sVol;
-      sellOrdersSum += sOrders;
-      sellMovingWeekSum += sMW;
+      sellVolSum += sVol || 0;
+      sellOrdersSum += sOrders || 0;
+      sellMovingWeekSum += sMW || 0;
     }
+
+    // Guard against Infinity values (no valid data in group)
+    if (buyHigh === -Infinity) buyHigh = 0;
+    if (buyLow === Infinity) buyLow = 0;
+    if (sellHigh === -Infinity) sellHigh = 0;
+    if (sellLow === Infinity) sellLow = 0;
 
     candles.push({
       timestamp,
@@ -122,107 +144,153 @@ function condenseData(rows: any[], intervalMs: number): any[] {
 }
 
 export function runDownsampler() {
+  const startTime = Date.now();
   console.log('[Downsampler] Starting multi-tier downsampling...');
 
-  const products = getAllProductsStmt.all() as { id: number; product_id: string }[];
+  let products: { id: number; product_id: string }[];
+  try {
+    products = getAllProductsStmt.all() as { id: number; product_id: string }[];
+  } catch (err) {
+    const msg = `Failed to query products: ${(err as Error).message}`;
+    console.error(`[Downsampler] ${msg}`);
+    notifyError('downsampler', 'Downsampler Failed to Start', msg);
+    return;
+  }
+
   console.log(`[Downsampler] Processing ${products.length} products...`);
+
+  let totalProcessed = 0;
+  let totalErrors = 0;
+  let tierStats = { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0, t6: 0 };
 
   for (const product of products) {
     const pId = product.id;
 
-    // --- Tier 1: Raw (20s) -> 1-Minute (after 1 day) ---
-    const tier1Cutoff = Date.now() - ONE_DAY_MS;
-    const rawData = getRawPricesOlderThanForProduct(pId, tier1Cutoff);
-    if (rawData.length > 0) {
-      const oneMinCandles = condenseData(rawData, ONE_MINUTE_MS);
-      try {
+    try {
+      // --- Tier 1: Raw (20s) -> 1-Minute (after 1 day) ---
+      const tier1Cutoff = Date.now() - ONE_DAY_MS;
+      const rawData = getRawPricesOlderThanForProduct(pId, tier1Cutoff);
+      if (rawData.length > 0) {
+        const oneMinCandles = condenseData(rawData, ONE_MINUTE_MS);
         bulkInsertOneMinPrices(oneMinCandles);
         deleteRawPricesOlderThanForProduct(pId, tier1Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 1 Error for ${product.product_id}:`, err);
+        tierStats.t1 += rawData.length;
       }
-    }
 
-    // --- Tier 2: 1-Minute -> 5-Minute (after 3 days) ---
-    const tier2Cutoff = Date.now() - THREE_DAYS_MS;
-    const oneMinData = getOneMinPricesOlderThanForProduct(pId, tier2Cutoff);
-    if (oneMinData.length > 0) {
-      const fiveMinCandles = condenseData(oneMinData, FIVE_MINUTES_MS);
-      try {
+      // --- Tier 2: 1-Minute -> 5-Minute (after 3 days) ---
+      const tier2Cutoff = Date.now() - THREE_DAYS_MS;
+      const oneMinData = getOneMinPricesOlderThanForProduct(pId, tier2Cutoff);
+      if (oneMinData.length > 0) {
+        const fiveMinCandles = condenseData(oneMinData, FIVE_MINUTES_MS);
         bulkInsertFiveMinPrices(fiveMinCandles);
         deleteOneMinPricesOlderThanForProduct(pId, tier2Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 2 Error for ${product.product_id}:`, err);
+        tierStats.t2 += oneMinData.length;
       }
-    }
 
-    // --- Tier 3: 5-Minute -> 10-Minute (after 1 week) ---
-    const tier3Cutoff = Date.now() - ONE_WEEK_MS;
-    const fiveMinData = getFiveMinPricesOlderThanForProduct(pId, tier3Cutoff);
-    if (fiveMinData.length > 0) {
-      const tenMinCandles = condenseData(fiveMinData, TEN_MINUTES_MS);
-      try {
+      // --- Tier 3: 5-Minute -> 10-Minute (after 1 week) ---
+      const tier3Cutoff = Date.now() - ONE_WEEK_MS;
+      const fiveMinData = getFiveMinPricesOlderThanForProduct(pId, tier3Cutoff);
+      if (fiveMinData.length > 0) {
+        const tenMinCandles = condenseData(fiveMinData, TEN_MINUTES_MS);
         bulkInsertTenMinPrices(tenMinCandles);
         deleteFiveMinPricesOlderThanForProduct(pId, tier3Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 3 Error for ${product.product_id}:`, err);
+        tierStats.t3 += fiveMinData.length;
       }
-    }
 
-    // --- Tier 4: 10-Minute -> 30-Minute (after 2 weeks) ---
-    const tier4Cutoff = Date.now() - TWO_WEEKS_MS;
-    const tenMinData = getTenMinPricesOlderThanForProduct(pId, tier4Cutoff);
-    if (tenMinData.length > 0) {
-      const thirtyMinCandles = condenseData(tenMinData, THIRTY_MINUTES_MS);
-      try {
+      // --- Tier 4: 10-Minute -> 30-Minute (after 2 weeks) ---
+      const tier4Cutoff = Date.now() - TWO_WEEKS_MS;
+      const tenMinData = getTenMinPricesOlderThanForProduct(pId, tier4Cutoff);
+      if (tenMinData.length > 0) {
+        const thirtyMinCandles = condenseData(tenMinData, THIRTY_MINUTES_MS);
         bulkInsertThirtyMinPrices(thirtyMinCandles);
         deleteTenMinPricesOlderThanForProduct(pId, tier4Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 4 Error for ${product.product_id}:`, err);
+        tierStats.t4 += tenMinData.length;
       }
-    }
 
-    // --- Tier 5: 30-Minute -> 1-Hour (after 4 weeks) ---
-    const tier5Cutoff = Date.now() - FOUR_WEEKS_MS;
-    const thirtyMinData = getThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
-    if (thirtyMinData.length > 0) {
-      const hourlyCandles = condenseData(thirtyMinData, ONE_HOUR_MS);
-      try {
+      // --- Tier 5: 30-Minute -> 1-Hour (after 4 weeks) ---
+      const tier5Cutoff = Date.now() - FOUR_WEEKS_MS;
+      const thirtyMinData = getThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
+      if (thirtyMinData.length > 0) {
+        const hourlyCandles = condenseData(thirtyMinData, ONE_HOUR_MS);
         bulkInsertHourlyPrices(hourlyCandles);
         deleteThirtyMinPricesOlderThanForProduct(pId, tier5Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 5 Error for ${product.product_id}:`, err);
+        tierStats.t5 += thirtyMinData.length;
       }
-    }
 
-    // --- Tier 6: 1-Hour -> 1-Day (after 2 months) ---
-    const tier6Cutoff = Date.now() - TWO_MONTHS_MS;
-    const hourlyData = getHourlyPricesOlderThanForProduct(pId, tier6Cutoff);
-    if (hourlyData.length > 0) {
-      const dailyCandles = condenseData(hourlyData, ONE_DAY_MS);
-      try {
+      // --- Tier 6: 1-Hour -> 1-Day (after 2 months) ---
+      const tier6Cutoff = Date.now() - TWO_MONTHS_MS;
+      const hourlyData = getHourlyPricesOlderThanForProduct(pId, tier6Cutoff);
+      if (hourlyData.length > 0) {
+        const dailyCandles = condenseData(hourlyData, ONE_DAY_MS);
         bulkInsertDailyPrices(dailyCandles);
         deleteHourlyPricesOlderThanForProduct(pId, tier6Cutoff);
-      } catch (err) {
-        console.error(`[Downsampler] Tier 6 Error for ${product.product_id}:`, err);
+        tierStats.t6 += hourlyData.length;
+      }
+
+      totalProcessed++;
+    } catch (err) {
+      totalErrors++;
+      const msg = `Downsampling error for ${product.product_id}: ${(err as Error).message}`;
+      console.error(`[Downsampler] ${msg}`);
+      
+      // Only notify Discord on first few errors to avoid spam
+      if (totalErrors <= 3) {
+        notifyWarning('downsampler', 'Downsampler Product Error', msg);
       }
     }
   }
 
-  console.log('[Downsampler] All tiers complete for all products.');
-  
-  // Run maintenance tasks once a day during the downsampler run
+  const elapsed = Date.now() - startTime;
+  const summary = `Processed ${totalProcessed}/${products.length} products in ${(elapsed / 1000).toFixed(1)}s | Errors: ${totalErrors}`;
+  console.log(`[Downsampler] ${summary}`);
+  console.log(`[Downsampler] Tier stats — Raw→1m: ${tierStats.t1}, 1m→5m: ${tierStats.t2}, 5m→10m: ${tierStats.t3}, 10m→30m: ${tierStats.t4}, 30m→1h: ${tierStats.t5}, 1h→1d: ${tierStats.t6}`);
+
+  if (totalErrors > 0) {
+    notifyWarning('downsampler', 'Downsampler Completed with Errors', summary, [
+      { name: 'Products OK', value: `${totalProcessed}`, inline: true },
+      { name: 'Errors', value: `${totalErrors}`, inline: true },
+      { name: 'Duration', value: `${(elapsed / 1000).toFixed(1)}s`, inline: true },
+    ]);
+  }
+
+  // Run maintenance tasks
   console.log('[Downsampler] Running maintenance tasks...');
-  cleanupHeartbeats();
-  vacuumDB();
+  try {
+    cleanupHeartbeats();
+  } catch (err) {
+    console.error('[Downsampler] Heartbeat cleanup error:', err);
+  }
+
+  try {
+    incrementalVacuum();
+  } catch (err) {
+    console.error('[Downsampler] Incremental vacuum error:', err);
+  }
 
   logHeartbeat('downsampler');
 }
 
 export function scheduleDownsampler() {
-  runDownsampler();
-  // Run every 24 hours
-  setInterval(runDownsampler, 24 * 60 * 60 * 1000);
+  console.log(`[Downsampler] Scheduled to run every ${DOWNSAMPLER_INTERVAL_MS / 60000} minutes.`);
+  
+  // Notify startup
+  notifySuccess('downsampler', 'Downsampler Started', `Running every ${DOWNSAMPLER_INTERVAL_MS / 60000} minutes.`);
+
+  // Run the first time after a short delay (let the DB initialize)
+  setTimeout(() => {
+    runDownsampler();
+  }, 5000);
+
+  // Run every hour
+  setInterval(() => {
+    try {
+      runDownsampler();
+    } catch (err) {
+      const msg = `Unhandled downsampler error: ${(err as Error).message}`;
+      console.error(`[Downsampler] ${msg}`);
+      notifyError('downsampler', 'Downsampler Crash', msg);
+    }
+  }, DOWNSAMPLER_INTERVAL_MS);
   
   // Log heartbeat every minute so health checks pass
   setInterval(() => logHeartbeat('downsampler'), 60000);
