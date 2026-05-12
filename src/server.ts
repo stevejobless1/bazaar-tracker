@@ -236,6 +236,21 @@ app.get('/api/mayors', (req, res) => {
   }
 });
 
+// Proxy for Jacob's Farming Contests (Bypassing CORS)
+app.get('/api/jacobs', async (req, res) => {
+  try {
+    const response = await axios.get('https://jacobs.strassburger.dev/api/jacobcontests', {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Bazaar-Tracker/1.0' }
+    });
+    res.json(response.data);
+  } catch (err: any) {
+    console.error('[Server] /api/jacobs proxy error:', err.message);
+    res.status(502).json({ success: false, error: 'Failed to fetch contests from source' });
+  }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);

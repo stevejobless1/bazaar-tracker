@@ -149,7 +149,7 @@ export function runDownsampler() {
 
   let products: { id: number; product_id: string }[];
   try {
-    products = getAllProductsStmt.all() as { id: number; product_id: string }[];
+    products = getAllProducts() as { id: number; product_id: string }[];
   } catch (err) {
     const msg = `Failed to query products: ${(err as Error).message}`;
     console.error(`[Downsampler] ${msg}`);
