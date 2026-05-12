@@ -20,7 +20,7 @@ import {
   incrementalVacuum,
   logHeartbeat,
   cleanupHeartbeats,
-  getAllProductsStmt
+  getAllProducts
 } from './db';
 import { notifyError, notifySuccess, notifyWarning, trackFailure, resetFailure } from './discord';
 
@@ -74,10 +74,10 @@ function condenseData(rows: any[], intervalMs: number): any[] {
       console.error(`[Downsampler] Invalid key format: ${key}`);
       continue;
     }
-    const productId = parseInt(parts[0], 10);
+    const productId = parts[0];
     const timestamp = parseInt(parts[1], 10);
 
-    if (isNaN(productId) || isNaN(timestamp)) {
+    if (!productId || isNaN(timestamp)) {
       console.error(`[Downsampler] Failed to parse key: ${key}`);
       continue;
     }
@@ -147,9 +147,9 @@ export function runDownsampler() {
   const startTime = Date.now();
   console.log('[Downsampler] Starting multi-tier downsampling...');
 
-  let products: { id: number; product_id: string }[];
+  let products: { id: string; product_id: string }[];
   try {
-    products = getAllProducts() as { id: number; product_id: string }[];
+    products = getAllProducts() as { id: string; product_id: string }[];
   } catch (err) {
     const msg = `Failed to query products: ${(err as Error).message}`;
     console.error(`[Downsampler] ${msg}`);
@@ -164,7 +164,7 @@ export function runDownsampler() {
   let tierStats = { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0, t6: 0 };
 
   for (const product of products) {
-    const pId = product.id;
+    const pId = product.product_id;
 
     try {
       // --- Tier 1: Raw (20s) -> 1-Minute (after 1 day) ---

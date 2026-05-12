@@ -13,7 +13,7 @@
  * Usage: node dist/scripts/migrateLegacyToDaily.js
  */
 
-import { db, getAllProductsStmt } from '../db';
+import { db, getAllProducts } from '../db';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -31,7 +31,7 @@ const insertDailyStmt = db.prepare(`
 function migrate() {
   console.log('[Migration] Starting hourly_prices → daily_prices migration...');
 
-  const products = getAllProductsStmt.all() as { id: number; product_id: string }[];
+  const products = getAllProducts() as { id: number; product_id: string }[];
   console.log(`[Migration] Processing ${products.length} products...`);
 
   let totalMigrated = 0;

@@ -428,4 +428,5 @@ export function cleanupHeartbeats() {
 
 export function getOrCreateProductId(productId: string) { return productId; }
 
+initDB();
 export default db;
