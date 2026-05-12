@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
@@ -39,7 +40,13 @@ app.use((req, res, next) => {
 });
 
 // Simple auth middleware
-const AUTH_PASSWORD = process.env.DASHBOARD_PASSWORD || 'fusion';
+const AUTH_PASSWORD = process.env.DASHBOARD_PASSWORD;
+
+if (!AUTH_PASSWORD) {
+  console.error('[Server] FATAL: DASHBOARD_PASSWORD environment variable is not set!');
+  process.exit(1);
+}
+
 const authMiddleware = (req: any, res: any, next: any) => {
   const authCookie = req.headers.cookie?.split(';').find((c: string) => c.trim().startsWith('bt_auth='));
   if (authCookie && authCookie.includes('bt_auth=true')) {
@@ -62,7 +69,7 @@ app.get('/health', (req, res) => {
 // Login endpoint
 app.post('/api/login', (req, res) => {
   const { password } = req.body;
-  if (password === AUTH_PASSWORD || password === 'fusion-2024') {
+  if (password === AUTH_PASSWORD) {
     res.json({ success: true });
   } else {
     res.status(401).json({ success: false, error: 'Invalid password' });
