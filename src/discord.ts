@@ -62,7 +62,7 @@ export async function notifyDiscord(opts: DiscordNotifyOptions): Promise<void> {
     embeds: [embed],
   };
 
-  // Only @everyone for errors
+  // Only @everyone for errors or if explicitly requested
   if (mention || severity === 'error') {
     payload.content = '@everyone';
   }
@@ -85,11 +85,11 @@ export const notifyError = (service: string, title: string, description: string,
 export const notifyWarning = (service: string, title: string, description: string, fields?: { name: string; value: string; inline?: boolean }[]) =>
   notifyDiscord({ title, description, severity: 'warning', service, fields });
 
-export const notifyInfo = (service: string, title: string, description: string, fields?: { name: string; value: string; inline?: boolean }[]) =>
-  notifyDiscord({ title, description, severity: 'info', service, fields });
+export const notifyInfo = (service: string, title: string, description: string, fields?: { name: string; value: string; inline?: boolean }[], mention = false) =>
+  notifyDiscord({ title, description, severity: 'info', service, fields, mention });
 
-export const notifySuccess = (service: string, title: string, description: string, fields?: { name: string; value: string; inline?: boolean }[]) =>
-  notifyDiscord({ title, description, severity: 'success', service, fields });
+export const notifySuccess = (service: string, title: string, description: string, fields?: { name: string; value: string; inline?: boolean }[], mention = false) =>
+  notifyDiscord({ title, description, severity: 'success', service, fields, mention });
 
 // Track consecutive failures for escalation
 const failureCounters = new Map<string, number>();

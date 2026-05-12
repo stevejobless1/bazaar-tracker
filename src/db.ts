@@ -5,6 +5,36 @@ import path from 'path';
 const dbPath = process.env.DB_PATH 
   ? path.resolve(process.env.DB_PATH) 
   : path.resolve(__dirname, '../bazaar.db');
+
+// AGGRESSIVE WIPE: If WIPE_DB=true, try to delete the file before opening
+if (process.env.WIPE_DB === 'true') {
+  try {
+    const fs = require('fs');
+    const absoluteDbPath = path.resolve(dbPath);
+    console.log(`[DB] ⚠️ WIPE_DB=true — Targeting database at: ${absoluteDbPath}`);
+    
+    if (fs.existsSync(dbPath)) {
+      console.log('[DB]   Found existing database file. Deleting...');
+      fs.unlinkSync(dbPath);
+      
+      // Also delete WAL and SHM files if they exist
+      if (fs.existsSync(`${dbPath}-wal`)) {
+        console.log('[DB]   Deleting WAL file...');
+        fs.unlinkSync(`${dbPath}-wal`);
+      }
+      if (fs.existsSync(`${dbPath}-shm`)) {
+        console.log('[DB]   Deleting SHM file...');
+        fs.unlinkSync(`${dbPath}-shm`);
+      }
+      console.log('[DB] ✅ Database file and WAL/SHM deleted successfully.');
+    } else {
+      console.log('[DB]   No database file found at this path. Nothing to delete.');
+    }
+  } catch (err) {
+    console.error('[DB] ❌ Failed to delete database file:', err);
+  }
+}
+
 export const db = new Database(dbPath);
 
 // Enable Write-Ahead Logging for better performance and concurrency
@@ -16,15 +46,37 @@ db.pragma('busy_timeout = 5000');
 
 // Initialize database schema
 export function initDB() {
-  // Fresh start: drop all tables if WIPE_DB is set
+  // Fresh start: additional safety if file deletion wasn't enough or failed
   if (process.env.WIPE_DB === 'true') {
-    console.log('[DB] ⚠️  WIPE_DB=true — Dropping ALL tables for fresh start...');
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
-    for (const { name } of tables) {
-      db.exec(`DROP TABLE IF EXISTS "${name}"`);
-      console.log(`[DB]   Dropped table: ${name}`);
+    console.log('[DB] ⚠️ WIPE_DB=true — Dropping ALL tables for fresh start...');
+    try {
+      // Disable foreign keys temporarily to avoid drop errors
+      db.exec('PRAGMA foreign_keys = OFF');
+      
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+      for (const { name } of tables) {
+        db.exec(`DROP TABLE IF EXISTS "${name}"`);
+        console.log(`[DB]   Dropped table: ${name}`);
+      }
+      
+      // Re-enable foreign keys
+      db.exec('PRAGMA foreign_keys = ON');
+      
+      // Reclaim space just in case
+      db.exec('VACUUM');
+      console.log('[DB] ✅ All tables dropped and VACUUM completed.');
+      
+      // Notify Discord (one-time)
+      try {
+        const { notifySuccess } = require('./discord');
+        const size = getDatabaseSize();
+        notifySuccess('db', 'Database Wiped', `The database has been completely wiped and storage has been reclaimed due to \`WIPE_DB=true\`.\nCurrent size: **${size.sizeMB} MB**`, [], true);
+      } catch (e) {
+        // Might fail if imported by something else first
+      }
+    } catch (err) {
+      console.error('[DB] ❌ Failed to drop tables during wipe:', err);
     }
-    console.log('[DB] All tables dropped. Recreating schema...');
   }
 
   db.exec(`
@@ -801,6 +853,20 @@ let cachedStats: any = null;
 let lastStatsFetch = 0;
 const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+export function getDatabaseSize() {
+  const pageCountRow = db.prepare('PRAGMA page_count').get() as any;
+  const pageSizeRow = db.prepare('PRAGMA page_size').get() as any;
+  const pageCount = pageCountRow?.page_count || 0;
+  const pageSize = pageSizeRow?.page_size || 0;
+  const dbSizeBytes = pageCount * pageSize;
+  return {
+    sizeBytes: dbSizeBytes,
+    sizeMB: +(dbSizeBytes / (1024 * 1024)).toFixed(2),
+    pageCount,
+    pageSize
+  };
+}
+
 export function getStatusStats(forceRefresh = false) {
   const now = Date.now();
   if (!forceRefresh && cachedStats && (now - lastStatsFetch < STATS_CACHE_TTL)) {
@@ -812,11 +878,8 @@ export function getStatusStats(forceRefresh = false) {
   }
 
   // Database file size info from SQLite internals
-  const pageCountRow = db.prepare('PRAGMA page_count').get() as any;
-  const pageSizeRow = db.prepare('PRAGMA page_size').get() as any;
-  const pageCount = pageCountRow?.page_count || 0;
-  const pageSize = pageSizeRow?.page_size || 0;
-  const dbSizeBytes = pageCount * pageSize;
+  const dbSize = getDatabaseSize();
+  const { sizeBytes: dbSizeBytes, sizeMB, pageCount, pageSize } = dbSize;
 
   // WAL size
   const walPageCountRow = db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as any;

@@ -10,6 +10,7 @@ import {
   insertVolumeDelta,
   LiveOrderSummaries,
   ProductPrice,
+  getDatabaseSize,
   db
 } from './db';
 
@@ -92,13 +93,23 @@ async function fetchMayorData() {
 
 function getDbDiagnostics(): string {
   try {
-    const rawCount = (db.prepare('SELECT COUNT(*) as cnt FROM prices').get() as any)?.cnt || 0;
+    const counts = {
+      raw: (db.prepare('SELECT COUNT(*) as cnt FROM prices').get() as any)?.cnt || 0,
+      '1m': (db.prepare('SELECT COUNT(*) as cnt FROM one_min_prices').get() as any)?.cnt || 0,
+      '5m': (db.prepare('SELECT COUNT(*) as cnt FROM five_min_prices').get() as any)?.cnt || 0,
+      '10m': (db.prepare('SELECT COUNT(*) as cnt FROM ten_min_prices').get() as any)?.cnt || 0,
+      '30m': (db.prepare('SELECT COUNT(*) as cnt FROM thirty_min_prices').get() as any)?.cnt || 0,
+      '1h': (db.prepare('SELECT COUNT(*) as cnt FROM hourly_prices').get() as any)?.cnt || 0,
+      '1d': (db.prepare('SELECT COUNT(*) as cnt FROM daily_prices').get() as any)?.cnt || 0,
+    };
+    
     const pageCount = (db.prepare('PRAGMA page_count').get() as any)?.page_count || 0;
     const pageSize = (db.prepare('PRAGMA page_size').get() as any)?.page_size || 0;
     const dbSizeMB = ((pageCount * pageSize) / (1024 * 1024)).toFixed(1);
-    return `Raw rows: ${rawCount.toLocaleString()} | DB size: ${dbSizeMB} MB`;
-  } catch {
-    return 'Unable to read diagnostics';
+    
+    return `Storage: ${dbSizeMB} MB | Rows: Raw=${counts.raw.toLocaleString()}, 1m=${counts['1m'].toLocaleString()}, 5m=${counts['5m'].toLocaleString()}, 10m=${counts['10m'].toLocaleString()}, 30m=${counts['30m'].toLocaleString()}, 1h=${counts['1h'].toLocaleString()}, 1d=${counts['1d'].toLocaleString()}`;
+  } catch (err) {
+    return `Unable to read diagnostics: ${(err as Error).message}`;
   }
 }
 
@@ -275,11 +286,13 @@ async function runTracker() {
   }
 
   // Notify successful startup
+  const dbSize = getDatabaseSize();
   notifySuccess('tracker', 'Tracker Started', 
-    `Polling Hypixel Bazaar API every ${POLL_INTERVAL_MS / 1000}s.\n${getDbDiagnostics()}`,
+    `Polling Hypixel Bazaar API every ${POLL_INTERVAL_MS / 1000}s.\nDatabase storage: **${dbSize.sizeMB} MB**`,
     [
       { name: 'Products Loaded', value: `${lastState.size}`, inline: true },
       { name: 'API Key', value: HYPIXEL_API_KEY ? 'Configured' : 'Not Set', inline: true },
+      { name: 'Diagnostics', value: `\`${getDbDiagnostics().split('|')[1].trim()}\``, inline: false },
     ]
   );
 
@@ -304,14 +317,16 @@ async function runTracker() {
     const uptimeMs = Date.now() - startupTime;
     const uptimeHours = (uptimeMs / (1000 * 60 * 60)).toFixed(1);
     
+    const dbSize = getDatabaseSize();
     notifyInfo('tracker', 'Hourly Status Report', 
-      `Tracker has been running for **${uptimeHours}h**.\n${getDbDiagnostics()}`,
+      `Tracker has been running for **${uptimeHours}h**.\nDatabase storage: **${dbSize.sizeMB} MB**`,
       [
         { name: 'Total Ticks', value: `${totalTicks}`, inline: true },
         { name: 'Total Inserts', value: `${totalInserts.toLocaleString()}`, inline: true },
         { name: 'API Errors', value: `${totalApiErrors}`, inline: true },
         { name: 'DB Errors', value: `${totalDbErrors}`, inline: true },
         { name: 'Products Tracked', value: `${lastState.size}`, inline: true },
+        { name: 'Row Stats', value: `\`${getDbDiagnostics().split('|')[1].trim()}\``, inline: false },
       ]
     );
   }, STATUS_REPORT_INTERVAL_MS);
