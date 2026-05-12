@@ -101,7 +101,7 @@ async function fetchMayorData() {
 function getDbDiagnostics(): string {
   try {
     const counts = {
-      raw: (db.prepare('SELECT COUNT(*) as cnt FROM prices').get() as any)?.cnt || 0,
+      raw: (db.prepare('SELECT COUNT(*) as cnt FROM bazaar_prices').get() as any)?.cnt || 0,
       '1m': (db.prepare('SELECT COUNT(*) as cnt FROM one_min_prices').get() as any)?.cnt || 0,
       '5m': (db.prepare('SELECT COUNT(*) as cnt FROM five_min_prices').get() as any)?.cnt || 0,
       '10m': (db.prepare('SELECT COUNT(*) as cnt FROM ten_min_prices').get() as any)?.cnt || 0,
@@ -308,7 +308,7 @@ async function runTracker() {
     [
       { name: 'Products Loaded', value: `${lastState.size}`, inline: true },
       { name: 'API Key', value: HYPIXEL_API_KEY ? 'Configured' : 'Not Set', inline: true },
-      { name: 'Diagnostics', value: `\`${getDbDiagnostics().split('|')[1].trim()}\``, inline: false },
+      { name: 'Diagnostics', value: `\`${getDbDiagnostics().split('|')[1]?.trim() || getDbDiagnostics()}\``, inline: false },
     ]
   );
 
