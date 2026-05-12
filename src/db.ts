@@ -49,6 +49,9 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('busy_timeout = 5000');
 
+// Initialize schema immediately after opening the database
+initDB();
+
 /**
  * Initialize the database schema
  */
@@ -145,13 +148,15 @@ export function initDB() {
   db.prepare(`
     CREATE TABLE IF NOT EXISTS service_heartbeats (
       service_name TEXT PRIMARY KEY,
-      timestamp INTEGER
+      timestamp INTEGER,
+      metadata TEXT
     )
   `).run();
 
-  // Migration: add metadata column if missing
+  // Migration: add metadata column if missing (for existing databases)
   const columns = db.prepare("PRAGMA table_info(service_heartbeats)").all() as any[];
   if (!columns.find(c => c.name === 'metadata')) {
+    console.log('[DB] Migrating service_heartbeats: adding metadata column');
     db.prepare("ALTER TABLE service_heartbeats ADD COLUMN metadata TEXT").run();
   }
 
@@ -433,5 +438,5 @@ export function cleanupHeartbeats() {
 
 export function getOrCreateProductId(productId: string) { return productId; }
 
-initDB();
+// initDB is now called earlier in the file
 export default db;
