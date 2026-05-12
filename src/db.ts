@@ -145,10 +145,15 @@ export function initDB() {
   db.prepare(`
     CREATE TABLE IF NOT EXISTS service_heartbeats (
       service_name TEXT PRIMARY KEY,
-      timestamp INTEGER,
-      metadata TEXT
+      timestamp INTEGER
     )
   `).run();
+
+  // Migration: add metadata column if missing
+  const columns = db.prepare("PRAGMA table_info(service_heartbeats)").all() as any[];
+  if (!columns.find(c => c.name === 'metadata')) {
+    db.prepare("ALTER TABLE service_heartbeats ADD COLUMN metadata TEXT").run();
+  }
 
   // System status for general stats
   db.prepare(`
