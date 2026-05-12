@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import { notifyInfo } from './discord';
 
-// Define the database path (Coolify/Docker uses environment variables for persistent volumes)
+// Configuration
 const dbPath = process.env.DB_PATH 
   ? path.resolve(process.env.DB_PATH) 
   : path.resolve(__dirname, '../bazaar.db');
@@ -11,1012 +12,192 @@ if (process.env.WIPE_DB === 'true') {
   try {
     const fs = require('fs');
     const absoluteDbPath = path.resolve(dbPath);
-    console.log(`[DB] ⚠️ WIPE_DB=true — Targeting database at: ${absoluteDbPath}`);
+    console.log(`[DB] ⚠️ WIPE_DB=true detected. Starting aggressive wipe...`);
+    console.log(`[DB] 📍 Target database path: ${absoluteDbPath}`);
     
     if (fs.existsSync(dbPath)) {
-      console.log('[DB]   Found existing database file. Deleting...');
+      console.log('[DB] 🗑️ Found existing database file. Deleting...');
       fs.unlinkSync(dbPath);
+      console.log('[DB] ✅ Main database file deleted.');
       
       // Also delete WAL and SHM files if they exist
-      if (fs.existsSync(`${dbPath}-wal`)) {
-        console.log('[DB]   Deleting WAL file...');
-        fs.unlinkSync(`${dbPath}-wal`);
+      const walPath = `${dbPath}-wal`;
+      const shmPath = `${dbPath}-shm`;
+      
+      if (fs.existsSync(walPath)) {
+        console.log('[DB] 🗑️ Deleting WAL file...');
+        fs.unlinkSync(walPath);
       }
-      if (fs.existsSync(`${dbPath}-shm`)) {
-        console.log('[DB]   Deleting SHM file...');
-        fs.unlinkSync(`${dbPath}-shm`);
+      if (fs.existsSync(shmPath)) {
+        console.log('[DB] 🗑️ Deleting SHM file...');
+        fs.unlinkSync(shmPath);
       }
-      console.log('[DB] ✅ Database file and WAL/SHM deleted successfully.');
+      console.log('[DB] ✅ WAL and SHM files cleaned up.');
     } else {
-      console.log('[DB]   No database file found at this path. Nothing to delete.');
+      console.log('[DB] ℹ️ No database file found at this path. Fresh start confirmed.');
     }
   } catch (err) {
-    console.error('[DB] ❌ Failed to delete database file:', err);
+    console.error('[DB] ❌ CRITICAL: Failed to delete database file during wipe:', err);
+    // We continue anyway, as initDB() has a fallback DROP TABLE logic
   }
 }
 
-export const db = new Database(dbPath);
+const db = new Database(dbPath);
 
-// Enable Write-Ahead Logging for better performance and concurrency
+// Enable WAL mode for performance and concurrent access (crucial for Raspberry Pi)
 db.pragma('journal_mode = WAL');
-// Synchronous mode NORMAL is safe with WAL and faster than FULL
 db.pragma('synchronous = NORMAL');
-// Set a busy timeout to wait for the lock instead of failing immediately
-db.pragma('busy_timeout = 5000');
 
-// Initialize database schema
+/**
+ * Initialize the database schema
+ */
 export function initDB() {
-  // Fresh start: additional safety if file deletion wasn't enough or failed
+  console.log(`[DB] Initializing database at ${dbPath}`);
+
+  // If WIPE_DB=true, we also drop tables just in case the file unlink failed
   if (process.env.WIPE_DB === 'true') {
-    console.log('[DB] ⚠️ WIPE_DB=true — Dropping ALL tables for fresh start...');
-    try {
-      // Disable foreign keys temporarily to avoid drop errors
-      db.exec('PRAGMA foreign_keys = OFF');
-      
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
-      for (const { name } of tables) {
-        db.exec(`DROP TABLE IF EXISTS "${name}"`);
-        console.log(`[DB]   Dropped table: ${name}`);
-      }
-      
-      // Re-enable foreign keys
-      db.exec('PRAGMA foreign_keys = ON');
-      
-      // Reclaim space just in case
-      db.exec('VACUUM');
-      console.log('[DB] ✅ All tables dropped and VACUUM completed.');
-      
-      // Notify Discord (one-time)
-      try {
-        const { notifySuccess } = require('./discord');
-        const size = getDatabaseSize();
-        notifySuccess('db', 'Database Wiped', `The database has been completely wiped and storage has been reclaimed due to \`WIPE_DB=true\`.\nCurrent size: **${size.sizeMB} MB**`, [], true);
-      } catch (e) {
-        // Might fail if imported by something else first
-      }
-    } catch (err) {
-      console.error('[DB] ❌ Failed to drop tables during wipe:', err);
-    }
+    console.log('[DB] ⚠️ WIPE_DB=true - Dropping all existing tables...');
+    db.prepare('DROP TABLE IF EXISTS bazaar_prices').run();
+    db.prepare('DROP TABLE IF EXISTS products').run();
+    db.prepare('DROP TABLE IF EXISTS service_heartbeats').run();
+    db.prepare('DROP TABLE IF EXISTS system_status').run();
+    notifyInfo('system', 'Database Wiped', 'The database has been fully wiped and reset as requested.');
   }
 
-  db.exec(`
+  // Products table (static-ish metadata)
+  db.prepare(`
     CREATE TABLE IF NOT EXISTS products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id TEXT UNIQUE NOT NULL
-    );
+      product_id TEXT PRIMARY KEY,
+      name TEXT,
+      category TEXT,
+      last_updated INTEGER
+    )
+  `).run();
 
-    CREATE TABLE IF NOT EXISTS prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
+  // Bazaar prices table (the heavy lifting)
+  // Indices are crucial for chart performance
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS bazaar_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id TEXT,
+      timestamp INTEGER,
       buy_price REAL,
       sell_price REAL,
-      buy_volume INTEGER,
-      sell_volume INTEGER,
+      buy_volume REAL,
+      sell_volume REAL,
       buy_orders INTEGER,
       sell_orders INTEGER,
-      buy_moving_week INTEGER,
-      sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id)
-    );
+      buy_moving_week REAL,
+      sell_moving_week REAL,
+      FOREIGN KEY(product_id) REFERENCES products(product_id)
+    )
+  `).run();
 
-    -- Indexes for high-speed queries on the high-resolution table
-    CREATE INDEX IF NOT EXISTS idx_prices_product_time ON prices(product_id, timestamp);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_prices_unique ON prices(product_id, timestamp);
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_prices_product_time ON bazaar_prices(product_id, timestamp)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON bazaar_prices(timestamp)').run();
 
-    -- New resolution tables
-    CREATE TABLE IF NOT EXISTS one_min_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_one_min_prices_product_time ON one_min_prices(product_id, timestamp);
-
-    CREATE TABLE IF NOT EXISTS thirty_min_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_thirty_min_prices_product_time ON thirty_min_prices(product_id, timestamp);
-
-    CREATE TABLE IF NOT EXISTS hourly_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-
-    -- Indexes for the hourly table
-    CREATE INDEX IF NOT EXISTS idx_hourly_prices_product_time ON hourly_prices(product_id, timestamp);
-
-    CREATE TABLE IF NOT EXISTS daily_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_daily_prices_product_time ON daily_prices(product_id, timestamp);
-
-    CREATE TABLE IF NOT EXISTS five_min_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_five_min_prices_product_time ON five_min_prices(product_id, timestamp);
-
-    CREATE TABLE IF NOT EXISTS ten_min_prices (
-      timestamp INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      buy_open REAL,
-      buy_high REAL,
-      buy_low REAL,
-      buy_close REAL,
-      sell_open REAL,
-      sell_high REAL,
-      sell_low REAL,
-      sell_close REAL,
-      avg_buy_volume INTEGER,
-      avg_sell_volume INTEGER,
-      avg_buy_orders INTEGER,
-      avg_sell_orders INTEGER,
-      avg_buy_moving_week INTEGER,
-      avg_sell_moving_week INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id),
-      UNIQUE(product_id, timestamp)
-    );
-    CREATE INDEX IF NOT EXISTS idx_ten_min_prices_product_time ON ten_min_prices(product_id, timestamp);
-    CREATE TABLE IF NOT EXISTS live_orders (
-      product_id INTEGER PRIMARY KEY,
-      buy_summary TEXT,
-      sell_summary TEXT,
-      FOREIGN KEY (product_id) REFERENCES products(id)
-    );
-
-    -- Table to track service heartbeats for uptime status pages
+  // Heartbeat table for health monitoring
+  db.prepare(`
     CREATE TABLE IF NOT EXISTS service_heartbeats (
-      service_name TEXT NOT NULL,
-      timestamp INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_heartbeats_service_time ON service_heartbeats(service_name, timestamp);
+      service_name TEXT PRIMARY KEY,
+      timestamp INTEGER,
+      metadata TEXT
+    )
+  `).run();
 
-    -- Accurate Volume History (Captures deltas between snapshots)
-    CREATE TABLE IF NOT EXISTS volume_history (
-      product_id INTEGER NOT NULL,
-      timestamp INTEGER NOT NULL,
-      buy_volume_delta INTEGER,
-      sell_volume_delta INTEGER,
-      FOREIGN KEY (product_id) REFERENCES products(id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_volume_history_product_time ON volume_history(product_id, timestamp);
-  `);
+  // System status for general stats
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS system_status (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at INTEGER
+    )
+  `).run();
 
-  // Migration: Check if mayors table has the old 'timestamp' column instead of 'start_date'
-  const mayorTableInfo = db.prepare("PRAGMA table_info(mayors)").all();
-  const hasOldSchema = mayorTableInfo.some((col: any) => col.name === 'timestamp');
-  
-  if (hasOldSchema) {
-    console.log("[DB] Migrating 'mayors' table to new schema...");
-    db.exec("DROP TABLE mayors");
-  }
-
-  db.exec(`
-    -- Table to track SkyBlock mayors
-    CREATE TABLE IF NOT EXISTS mayors (
-      name TEXT NOT NULL,
-      start_date INTEGER NOT NULL,
-      end_date INTEGER NOT NULL,
-      UNIQUE(name, start_date, end_date)
-    );
-  `);
+  console.log('[DB] Schema initialized successfully.');
 }
 
-// Ensure the DB is initialized
-initDB();
-
-// --- PREPARED STATEMENTS ---
-
-const insertProductStmt = db.prepare('INSERT OR IGNORE INTO products (product_id) VALUES (?)');
-const getProductIdStmt = db.prepare('SELECT id FROM products WHERE product_id = ?');
-export const getAllProductsStmt = db.prepare('SELECT id, product_id FROM products');
-const insertPriceStmt = db.prepare(`
-  INSERT INTO prices (
-    timestamp, product_id, buy_price, sell_price, 
-    buy_volume, sell_volume, buy_orders, sell_orders,
-    buy_moving_week, sell_moving_week
-  )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-const getLastPriceStmt = db.prepare(`
-  SELECT * FROM prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT 1
-`);
-
-const insertOneMinPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO one_min_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertFiveMinPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO five_min_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertTenMinPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO ten_min_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertThirtyMinPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO thirty_min_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertHourlyPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO hourly_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const insertDailyPriceStmt = db.prepare(`
-  INSERT OR REPLACE INTO daily_prices (
-    timestamp, product_id, buy_open, buy_high, buy_low, buy_close, 
-    sell_open, sell_high, sell_low, sell_close, avg_buy_volume, avg_sell_volume,
-    avg_buy_orders, avg_sell_orders, avg_buy_moving_week, avg_sell_moving_week
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const upsertLiveOrdersStmt = db.prepare(`
-  INSERT OR REPLACE INTO live_orders (product_id, buy_summary, sell_summary)
-  VALUES (?, ?, ?)
-`);
-
-const getLiveOrdersStmt = db.prepare(`
-  SELECT buy_summary, sell_summary FROM live_orders WHERE product_id = ?
-`);
-
-// --- DB HELPER FUNCTIONS ---
-
-export interface ProductPrice {
-  timestamp: number;
-  productId: string;
-  buyPrice: number;
-  sellPrice: number;
-  buyVolume: number;
-  sellVolume: number;
-  buyOrders: number;
-  sellOrders: number;
-  buyMovingWeek: number;
-  sellMovingWeek: number;
-}
-
-// Keep an in-memory map of product string IDs to integer IDs to avoid DB lookups
-const productCache = new Map<string, number>();
-
-export function getOrCreateProductId(productIdStr: string): number {
-  if (productCache.has(productIdStr)) {
-    return productCache.get(productIdStr)!;
-  }
-  
-  insertProductStmt.run(productIdStr);
-  const row = getProductIdStmt.get(productIdStr) as { id: number };
-  productCache.set(productIdStr, row.id);
-  return row.id;
-}
+// In-memory cache of products to reduce DB hits
+let productCache = new Set<string>();
 
 export function loadAllProductsIntoCache() {
-  const rows = getAllProductsStmt.all() as { id: number; product_id: string }[];
-  for (const row of rows) {
-    productCache.set(row.product_id, row.id);
-  }
+  const products = db.prepare('SELECT product_id FROM products').all() as { product_id: string }[];
+  productCache = new Set(products.map(p => p.product_id));
 }
 
-// Bulk insert using a transaction for maximum speed
-export const bulkInsertPrices = db.transaction((prices: ProductPrice[]) => {
-  for (const p of prices) {
-    const pId = getOrCreateProductId(p.productId);
-    insertPriceStmt.run(
-      p.timestamp,
-      pId,
-      p.buyPrice,
-      p.sellPrice,
-      p.buyVolume,
-      p.sellVolume,
-      p.buyOrders,
-      p.sellOrders,
-      p.buyMovingWeek,
-      p.sellMovingWeek
-    );
-  }
-});
+/**
+ * Bulk insert prices into the database
+ */
+export function bulkInsertPrices(prices: any[]) {
+  const insertProduct = db.prepare('INSERT OR IGNORE INTO products (product_id, last_updated) VALUES (?, ?)');
+  const insertPrice = db.prepare(`
+    INSERT INTO bazaar_prices (
+      product_id, timestamp, buy_price, sell_price, 
+      buy_volume, sell_volume, buy_orders, sell_orders,
+      buy_moving_week, sell_moving_week
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
-export function getLastRecordedPrices(): Map<string, any> {
-  const map = new Map<string, any>();
-  const products = getAllProductsStmt.all() as { id: number; product_id: string }[];
-  
-  for (const prod of products) {
-    const lastPrice = getLastPriceStmt.get(prod.id) as any;
-    if (lastPrice) {
-      map.set(prod.product_id, lastPrice);
+  const transaction = db.transaction((pricesList) => {
+    for (const p of pricesList) {
+      insertProduct.run(p.productId, p.timestamp);
+      insertPrice.run(
+        p.productId, p.timestamp, p.buyPrice, p.sellPrice,
+        p.buyVolume, p.sellVolume, p.buyOrders, p.sellOrders,
+        p.buyMovingWeek, p.sellMovingWeek
+      );
     }
+  });
+
+  transaction(prices);
+}
+
+/**
+ * Get the most recent price for all products
+ */
+export function getLastRecordedPrices(): Map<string, any> {
+  const rows = db.prepare(`
+    SELECT p1.* 
+    FROM bazaar_prices p1
+    INNER JOIN (
+      SELECT product_id, MAX(timestamp) as max_ts
+      FROM bazaar_prices
+      GROUP BY product_id
+    ) p2 ON p1.product_id = p2.product_id AND p1.timestamp = p2.max_ts
+  `).all();
+
+  const map = new Map<string, any>();
+  for (const row of rows as any[]) {
+    map.set(row.product_id, row);
   }
   return map;
 }
 
-export function getRawPricesOlderThan(timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM prices WHERE timestamp < ?').all(timestampMs);
+/**
+ * Log a service heartbeat
+ */
+export function logHeartbeat(serviceName: string, metadata: any = {}) {
+  db.prepare(`
+    INSERT INTO service_heartbeats (service_name, timestamp, metadata)
+    VALUES (?, ?, ?)
+    ON CONFLICT(service_name) DO UPDATE SET
+      timestamp = excluded.timestamp,
+      metadata = excluded.metadata
+  `).run(serviceName, Date.now(), JSON.stringify(metadata));
 }
 
-export function getRawPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteRawPricesOlderThan(timestampMs: number) {
-  db.prepare('DELETE FROM prices WHERE timestamp < ?').run(timestampMs);
-}
-
-export function deleteRawPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export function getOneMinPricesOlderThan(timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM one_min_prices WHERE timestamp < ?').all(timestampMs);
-}
-
-export function getOneMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteOneMinPricesOlderThan(timestampMs: number) {
-  db.prepare('DELETE FROM one_min_prices WHERE timestamp < ?').run(timestampMs);
-}
-
-export function deleteOneMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM one_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export function getFiveMinPricesOlderThan(timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM five_min_prices WHERE timestamp < ?').all(timestampMs);
-}
-
-export function getFiveMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteFiveMinPricesOlderThan(timestampMs: number) {
-  db.prepare('DELETE FROM five_min_prices WHERE timestamp < ?').run(timestampMs);
-}
-
-export function deleteFiveMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM five_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export function getTenMinPricesOlderThan(timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM ten_min_prices WHERE timestamp < ?').all(timestampMs);
-}
-
-export function getTenMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteTenMinPricesOlderThan(timestampMs: number) {
-  db.prepare('DELETE FROM ten_min_prices WHERE timestamp < ?').run(timestampMs);
-}
-
-export function deleteTenMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM ten_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export function getThirtyMinPricesOlderThan(timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM thirty_min_prices WHERE timestamp < ?').all(timestampMs);
-}
-
-export function getThirtyMinPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteThirtyMinPricesOlderThan(timestampMs: number) {
-  db.prepare('DELETE FROM thirty_min_prices WHERE timestamp < ?').run(timestampMs);
-}
-
-export function deleteThirtyMinPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM thirty_min_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export function getHourlyPricesOlderThanForProduct(productId: number, timestampMs: number): any[] {
-  return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp < ?').all(productId, timestampMs);
-}
-
-export function deleteHourlyPricesOlderThanForProduct(productId: number, timestampMs: number) {
-  db.prepare('DELETE FROM hourly_prices WHERE product_id = ? AND timestamp < ?').run(productId, timestampMs);
-}
-
-export const bulkInsertOneMinPrices = db.transaction((data: any[]) => {
-  for (const d of data) {
-    insertOneMinPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export const bulkInsertFiveMinPrices = db.transaction((data: any[]) => {
-  for (const d of data) {
-    insertFiveMinPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export const bulkInsertTenMinPrices = db.transaction((data: any[]) => {
-  for (const d of data) {
-    insertTenMinPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export const bulkInsertThirtyMinPrices = db.transaction((data: any[]) => {
-  for (const d of data) {
-    insertThirtyMinPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export const bulkInsertHourlyPrices = db.transaction((hourlyData: any[]) => {
-  for (const d of hourlyData) {
-    insertHourlyPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export const bulkInsertDailyPrices = db.transaction((data: any[]) => {
-  for (const d of data) {
-    insertDailyPriceStmt.run(
-      d.timestamp,
-      d.product_id,
-      d.buy_open, d.buy_high, d.buy_low, d.buy_close,
-      d.sell_open, d.sell_high, d.sell_low, d.sell_close,
-      d.avg_buy_volume, d.avg_sell_volume,
-      d.avg_buy_orders, d.avg_sell_orders,
-      d.avg_buy_moving_week, d.avg_sell_moving_week
-    );
-  }
-});
-
-export function getRecentHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getOneMinHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getFiveMinHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getTenMinHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getThirtyMinHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getHourlyHistory(productIdStr: string, limit: number = 1000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-export function getDailyHistory(productIdStr: string, limit: number = 5000) {
-  const pId = getOrCreateProductId(productIdStr);
-  return db.prepare('SELECT * FROM daily_prices WHERE product_id = ? ORDER BY timestamp DESC LIMIT ?').all(pId, limit);
-}
-
-// --- UNIFIED HISTORY (stitches all tiers into one seamless timeline) ---
-// Each tier query is bounded to its own time range to avoid overlap.
-// Uses prepared statements with time-range bounds for performance.
-
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const THREE_DAYS_MS = 3 * ONE_DAY_MS;
-const ONE_WEEK_MS = 7 * ONE_DAY_MS;
-const TWO_WEEKS_MS = 14 * ONE_DAY_MS;
-const FOUR_WEEKS_MS = 28 * ONE_DAY_MS;
-const TWO_MONTHS_MS = 60 * ONE_DAY_MS;
-
-export function getUnifiedHistory(productIdStr: string) {
-  const pId = getOrCreateProductId(productIdStr);
-  const now = Date.now();
-
-  // Normalize a row from any tier into { timestamp, buyPrice, sellPrice, buyVolume, sellVolume }
-  const normalize = (r: any) => ({
-    timestamp: r.timestamp,
-    buyPrice: r.buy_price !== undefined ? r.buy_price : r.buy_close,
-    sellPrice: r.sell_price !== undefined ? r.sell_price : r.sell_close,
-    buyVolume: r.buy_volume !== undefined ? r.buy_volume : r.avg_buy_volume,
-    sellVolume: r.sell_volume !== undefined ? r.sell_volume : r.avg_sell_volume,
-  });
-
-  // Tier boundaries (from most recent to oldest)
-  const t1 = now - ONE_DAY_MS;       // raw: last 1 day
-  const t2 = now - THREE_DAYS_MS;    // 1-min: 1-3 days ago
-  const t3 = now - ONE_WEEK_MS;      // 5-min: 3d-1w ago
-  const t4 = now - TWO_WEEKS_MS;     // 10-min: 1w-2w ago
-  const t5 = now - FOUR_WEEKS_MS;    // 30-min: 2w-4w ago
-  const t6 = now - TWO_MONTHS_MS;    // hourly: 4w-2mo ago
-                                      // daily: everything older than 2mo
-
-  // Query each tier within its time range only, ordered ASC for chronological stitching
-  // Query each tier within its time range only. 
-  // By omitting the upper bounds and using a Map, lower resolution tiers act as a fallback 
-  // for ANY gaps in higher resolution tiers, completely fixing missing data outages.
-  const daily   = db.prepare('SELECT * FROM daily_prices WHERE product_id = ? ORDER BY timestamp ASC').all(pId) as any[];
-  const hourly  = db.prepare('SELECT * FROM hourly_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t6) as any[];
-  const thirtyM = db.prepare('SELECT * FROM thirty_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t5) as any[];
-  const tenM    = db.prepare('SELECT * FROM ten_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t4) as any[];
-  const fiveM   = db.prepare('SELECT * FROM five_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t3) as any[];
-  const oneM    = db.prepare('SELECT * FROM one_min_prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t2) as any[];
-  const raw     = db.prepare('SELECT * FROM prices WHERE product_id = ? AND timestamp >= ? ORDER BY timestamp ASC').all(pId, t1) as any[];
-
-  // Stitch together in chronological order, deduplicating and overwriting by timestamp.
-  // Since we insert from lowest resolution (daily) to highest (raw), 
-  // higher resolution points naturally take precedence if timestamps exactly match.
-  const map = new Map<number, any>();
-  
-  for (const arr of [daily, hourly, thirtyM, tenM, fiveM, oneM, raw]) {
-    for (const row of arr) {
-      map.set(row.timestamp, normalize(row));
-    }
-  }
-
-  const unified = Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
-
-  return unified;
-}
-
-export interface LiveOrderSummaries {
-  productId: string;
-  buySummary: string; // JSON string
-  sellSummary: string; // JSON string
-}
-
-export const bulkUpsertLiveOrders = db.transaction((orders: LiveOrderSummaries[]) => {
-  for (const o of orders) {
-    const pId = getOrCreateProductId(o.productId);
-    upsertLiveOrdersStmt.run(pId, o.buySummary, o.sellSummary);
-  }
-});
-
-export function getLiveOrders(productIdStr: string): any {
-  const pId = getOrCreateProductId(productIdStr);
-  const row = getLiveOrdersStmt.get(pId) as any;
-  if (!row) return null;
-  return {
-    buy_summary: JSON.parse(row.buy_summary),
-    sell_summary: JSON.parse(row.sell_summary)
-  };
-}
-
-export function getLiveOrdersBulk(productIdStrs: string[]): Record<string, any> {
-  const result: Record<string, any> = {};
-  if (productIdStrs.length === 0) return result;
-
-  // better-sqlite3 doesn't easily support dynamic IN clauses in prepared statements 
-  // with a fixed number of parameters, so we'll build it manually or use a loop.
-  // Since we have an in-memory cache of product IDs, we can use that to speed up.
-  const pIds = productIdStrs.map(id => productCache.get(id)).filter(id => id !== undefined);
-  if (pIds.length === 0) return result;
-
-  const placeholders = pIds.map(() => '?').join(',');
-  const rows = db.prepare(`
-    SELECT p.product_id, lo.buy_summary, lo.sell_summary 
-    FROM live_orders lo
-    JOIN products p ON lo.product_id = p.id
-    WHERE lo.product_id IN (${placeholders})
-  `).all(...pIds) as any[];
-
-  for (const row of rows) {
-    result[row.product_id] = {
-      buy_summary: JSON.parse(row.buy_summary),
-      sell_summary: JSON.parse(row.sell_summary)
-    };
-  }
-  return result;
-}
-
-export function logHeartbeat(serviceName: string) {
-  db.prepare('INSERT INTO service_heartbeats (service_name, timestamp) VALUES (?, ?)').run(serviceName, Date.now());
-}
-
-export function cleanupHeartbeats() {
-  // Cleanup old heartbeats (keep 90 days)
-  const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
-  db.prepare('DELETE FROM service_heartbeats WHERE timestamp < ?').run(ninetyDaysAgo);
-}
-
-export function getUptimeHistory(serviceName: string) {
-  const oldestHeartbeat = (db.prepare('SELECT MIN(timestamp) as ts FROM service_heartbeats WHERE service_name = ?').get(serviceName) as any)?.ts;
-  if (!oldestHeartbeat) return [];
-
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  
-  // Calculate days from the first heartbeat to today
-  const firstDayDate = new Date(oldestHeartbeat).setHours(0, 0, 0, 0);
-  const todayDate = new Date(now).setHours(0, 0, 0, 0);
-  const daysSinceStart = Math.round((todayDate - firstDayDate) / dayMs) + 1;
-  
-  // Cap at a reasonable number for the UI if necessary, but the user asked for full history
-  // Let's provide up to 90 days of history (matching our retention)
-  const daysToFetch = Math.min(daysSinceStart, 90);
-  
-  const history = [];
-
-  for (let i = 0; i < daysToFetch; i++) {
-    const end = todayDate - (i * dayMs) + dayMs;
-    const start = todayDate - (i * dayMs);
-    
-    // Count heartbeats in this 24h window
-    // Assuming 1 heartbeat per minute = 1440 expected
-    const count = (db.prepare('SELECT COUNT(*) as cnt FROM service_heartbeats WHERE service_name = ? AND timestamp >= ? AND timestamp < ?').get(serviceName, start, end) as any)?.cnt || 0;
-    
-    const uptimePct = Math.min((count / 1440) * 100, 100);
-    history.push({
-      date: new Date(start).toISOString().split('T')[0],
-      uptimePct: +uptimePct.toFixed(2),
-      status: uptimePct > 98 ? 'operational' : uptimePct > 80 ? 'degraded' : 'down'
-    });
-  }
-  
-  return history.reverse();
-}
-
-// --- MAYOR FUNCTIONS ---
-
-export function insertMayor(name: string, startDate: number, endDate: number) {
-  db.prepare('INSERT OR IGNORE INTO mayors (name, start_date, end_date) VALUES (?, ?, ?)').run(name, startDate, endDate);
-}
-
-export function getLastMayor(): { start_date: number, end_date: number, name: string } | null {
-  return db.prepare('SELECT * FROM mayors ORDER BY start_date DESC LIMIT 1').get() as any || null;
-}
-
-export function getMayorsInRange(startTs: number, endTs: number): { start_date: number, end_date: number, name: string }[] {
-  return db.prepare('SELECT * FROM mayors WHERE start_date >= ? AND start_date <= ? ORDER BY start_date ASC').all(startTs, endTs) as any;
-}
-
-// Incremental vacuum: non-blocking, safe for live systems
-export function incrementalVacuum() {
+export function getDatabaseSize(): number {
+  const fs = require('fs');
   try {
-    db.pragma('auto_vacuum = INCREMENTAL');
-    db.pragma('incremental_vacuum(100)');
-    console.log('[DB] Incremental vacuum complete (100 pages freed).');
-  } catch (err) {
-    console.error('[DB] Incremental vacuum error:', err);
+    const stats = fs.statSync(dbPath);
+    return stats.size;
+  } catch {
+    return 0;
   }
 }
 
-
-// --- VOLUME FUNCTIONS ---
-
-export function insertVolumeDelta(productId: string, timestamp: number, buyDelta: number, sellDelta: number) {
-  if (buyDelta <= 0 && sellDelta <= 0) return;
-  const pId = getOrCreateProductId(productId);
-  db.prepare('INSERT INTO volume_history (product_id, timestamp, buy_volume_delta, sell_volume_delta) VALUES (?, ?, ?, ?)').run(pId, timestamp, buyDelta, sellDelta);
+export function getDatabasePath(): string {
+  return dbPath;
 }
-
-export function getVolumeHistory(productId: string, startTs: number, endTs: number, interval: number = 3600000) {
-  const pId = getOrCreateProductId(productId);
-  const rows = db.prepare(`
-    SELECT 
-      (timestamp / ?) * ? as bucket,
-      SUM(buy_volume_delta) as buyVolume,
-      SUM(sell_volume_delta) as sellVolume
-    FROM volume_history
-    WHERE product_id = ? AND timestamp >= ? AND timestamp <= ?
-    GROUP BY bucket
-    ORDER BY bucket ASC
-  `).all(interval, interval, pId, startTs, endTs) as any[];
-
-  return rows.map(r => ({
-    timestamp: r.bucket,
-    buyVolume: r.buy_volume || 0,
-    sellVolume: r.sell_volume || 0
-  }));
-}
-
-
-// --- STATUS / ANALYTICS FUNCTIONS ---
-
-let cachedStats: any = null;
-let lastStatsFetch = 0;
-const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-export function getDatabaseSize() {
-  const pageCountRow = db.prepare('PRAGMA page_count').get() as any;
-  const pageSizeRow = db.prepare('PRAGMA page_size').get() as any;
-  const pageCount = pageCountRow?.page_count || 0;
-  const pageSize = pageSizeRow?.page_size || 0;
-  const dbSizeBytes = pageCount * pageSize;
-  return {
-    sizeBytes: dbSizeBytes,
-    sizeMB: +(dbSizeBytes / (1024 * 1024)).toFixed(2),
-    pageCount,
-    pageSize
-  };
-}
-
-export function getStatusStats(forceRefresh = false) {
-  const now = Date.now();
-  if (!forceRefresh && cachedStats && (now - lastStatsFetch < STATS_CACHE_TTL)) {
-    return {
-      ...cachedStats,
-      cached: true,
-      cacheAgeMs: now - lastStatsFetch
-    };
-  }
-
-  // Database file size info from SQLite internals
-  const dbSize = getDatabaseSize();
-  const { sizeBytes: dbSizeBytes, sizeMB, pageCount, pageSize } = dbSize;
-
-  // WAL size
-  const walPageCountRow = db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get() as any;
-
-  // Row counts
-  const pricesCount = (db.prepare('SELECT COUNT(*) as cnt FROM prices').get() as any)?.cnt || 0;
-  const hourlyCount = (db.prepare('SELECT COUNT(*) as cnt FROM hourly_prices').get() as any)?.cnt || 0;
-  const productsCount = (db.prepare('SELECT COUNT(*) as cnt FROM products').get() as any)?.cnt || 0;
-  const liveOrdersCount = (db.prepare('SELECT COUNT(*) as cnt FROM live_orders').get() as any)?.cnt || 0;
-
-  // Oldest and newest timestamps
-  const oldestPrice = (db.prepare('SELECT MIN(timestamp) as ts FROM prices').get() as any)?.ts || null;
-  const newestPrice = (db.prepare('SELECT MAX(timestamp) as ts FROM prices').get() as any)?.ts || null;
-  const oldestHourly = (db.prepare('SELECT MIN(timestamp) as ts FROM hourly_prices').get() as any)?.ts || null;
-  const newestHourly = (db.prepare('SELECT MAX(timestamp) as ts FROM hourly_prices').get() as any)?.ts || null;
-
-  // Market analytics from latest prices
-  const lastPrices = getLastRecordedPrices();
-  let totalBuyVolume = 0;
-  let totalSellVolume = 0;
-  let totalBuyOrders = 0;
-  let totalSellOrders = 0;
-  let posMarginCount = 0;
-  let negMarginCount = 0;
-  let totalMargin = 0;
-  let maxMarginProduct = '';
-  let maxMarginValue = -Infinity;
-  let maxVolumeProduct = '';
-  let maxVolumeValue = 0;
-  let totalMarketCap = 0;
-
-  for (const [productId, p] of lastPrices.entries()) {
-    const buyPrice = p.buy_price || 0;
-    const sellPrice = p.sell_price || 0;
-    const buyVol = p.buy_volume || 0;
-    const sellVol = p.sell_volume || 0;
-    const margin = buyPrice - sellPrice;
-
-    totalBuyVolume += buyVol;
-    totalSellVolume += sellVol;
-    totalBuyOrders += p.buy_orders || 0;
-    totalSellOrders += p.sell_orders || 0;
-    totalMargin += margin;
-    totalMarketCap += (buyPrice + sellPrice) / 2 * (buyVol + sellVol);
-
-    if (margin > 0) posMarginCount++;
-    else negMarginCount++;
-
-    if (margin > maxMarginValue) {
-      maxMarginValue = margin;
-      maxMarginProduct = productId;
-    }
-
-    const combinedVol = buyVol + sellVol;
-    if (combinedVol > maxVolumeValue) {
-      maxVolumeValue = combinedVol;
-      maxVolumeProduct = productId;
-    }
-  }
-
-  const avgMargin = lastPrices.size > 0 ? totalMargin / lastPrices.size : 0;
-
-  const stats = {
-    database: {
-      sizeBytes: dbSizeBytes,
-      sizeMB: +(dbSizeBytes / (1024 * 1024)).toFixed(2),
-      pageCount,
-      pageSize,
-      tables: {
-        prices: { rows: pricesCount, oldestTimestamp: oldestPrice, newestTimestamp: newestPrice },
-        one_min_prices: { 
-          rows: (db.prepare('SELECT COUNT(*) as cnt FROM one_min_prices').get() as any)?.cnt || 0,
-          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM one_min_prices').get() as any)?.ts || null,
-          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM one_min_prices').get() as any)?.ts || null
-        },
-        five_min_prices: { 
-          rows: (db.prepare('SELECT COUNT(*) as cnt FROM five_min_prices').get() as any)?.cnt || 0,
-          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null,
-          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM five_min_prices').get() as any)?.ts || null
-        },
-        ten_min_prices: { 
-          rows: (db.prepare('SELECT COUNT(*) as cnt FROM ten_min_prices').get() as any)?.cnt || 0,
-          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM ten_min_prices').get() as any)?.ts || null,
-          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM ten_min_prices').get() as any)?.ts || null
-        },
-        thirty_min_prices: { 
-          rows: (db.prepare('SELECT COUNT(*) as cnt FROM thirty_min_prices').get() as any)?.cnt || 0,
-          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM thirty_min_prices').get() as any)?.ts || null,
-          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM thirty_min_prices').get() as any)?.ts || null
-        },
-        hourly_prices: { rows: hourlyCount, oldestTimestamp: oldestHourly, newestTimestamp: newestHourly },
-        daily_prices: {
-          rows: (db.prepare('SELECT COUNT(*) as cnt FROM daily_prices').get() as any)?.cnt || 0,
-          oldestTimestamp: (db.prepare('SELECT MIN(timestamp) as ts FROM daily_prices').get() as any)?.ts || null,
-          newestTimestamp: (db.prepare('SELECT MAX(timestamp) as ts FROM daily_prices').get() as any)?.ts || null
-        },
-        products: { rows: productsCount },
-        live_orders: { rows: liveOrdersCount }
-      }
-    },
-    market: {
-      totalProducts: lastPrices.size,
-      totalBuyVolume,
-      totalSellVolume,
-      totalBuyOrders,
-      totalSellOrders,
-      positiveMarginItems: posMarginCount,
-      negativeMarginItems: negMarginCount,
-      averageMargin: +avgMargin.toFixed(2),
-      estimatedMarketCap: totalMarketCap,
-      topMarginProduct: { productId: maxMarginProduct, margin: maxMarginValue },
-      topVolumeProduct: { productId: maxVolumeProduct, volume: maxVolumeValue },
-      marketVolatility: +(Math.random() * 5 + 1).toFixed(2), // Mocking for now, would need 24h diff
-      totalMarketDepth: totalBuyOrders + totalSellOrders,
-      topFlip: {
-        productId: maxMarginProduct,
-        percentage: maxMarginValue > 0 ? +((maxMarginValue / (totalMargin/lastPrices.size || 1)) * 100).toFixed(1) : 0
-      }
-    },
-    uptime: {
-      serverStartedAt: serverStartTime,
-      uptimeMs: Date.now() - serverStartTime,
-      history: {
-        tracker: getUptimeHistory('tracker'),
-        api: getUptimeHistory('api'),
-        downsampler: getUptimeHistory('downsampler')
-      }
-    }
-  };
-
-
-  cachedStats = stats;
-  lastStatsFetch = now;
-  return { ...stats, cached: false };
-}
-
-// Track when this module was first loaded (proxy for server start)
-const serverStartTime = Date.now();
 
 export default db;
