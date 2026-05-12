@@ -153,11 +153,28 @@ export function initDB() {
     )
   `).run();
 
-  // Migration: add metadata column if missing (for existing databases)
+  // Migration: ensure table has PRIMARY KEY and metadata column
   const columns = db.prepare("PRAGMA table_info(service_heartbeats)").all() as any[];
   if (!columns.find(c => c.name === 'metadata')) {
     console.log('[DB] Migrating service_heartbeats: adding metadata column');
     db.prepare("ALTER TABLE service_heartbeats ADD COLUMN metadata TEXT").run();
+  }
+
+  // Migration: Ensure service_name is PRIMARY KEY (for legacy schemas)
+  const pkCheck = columns.find(c => c.name === 'service_name' && c.pk === 1);
+  if (!pkCheck && columns.length > 0) {
+    console.log('[DB] Migrating service_heartbeats: enforcing PRIMARY KEY on service_name');
+    db.exec(`
+      CREATE TABLE service_heartbeats_new (
+        service_name TEXT PRIMARY KEY,
+        timestamp INTEGER,
+        metadata TEXT
+      );
+      INSERT OR IGNORE INTO service_heartbeats_new (service_name, timestamp, metadata) 
+      SELECT service_name, timestamp, metadata FROM service_heartbeats;
+      DROP TABLE service_heartbeats;
+      ALTER TABLE service_heartbeats_new RENAME TO service_heartbeats;
+    `);
   }
 
   // System status for general stats
@@ -276,13 +293,21 @@ export function getLastRecordedPrices(): Map<string, any> {
 }
 
 export function logHeartbeat(serviceName: string, metadata: any = {}) {
-  db.prepare(`
-    INSERT INTO service_heartbeats (service_name, timestamp, metadata)
-    VALUES (?, ?, ?)
-    ON CONFLICT(service_name) DO UPDATE SET
-      timestamp = excluded.timestamp,
-      metadata = excluded.metadata
-  `).run(serviceName, Date.now(), JSON.stringify(metadata));
+  try {
+    db.prepare(`
+      INSERT INTO service_heartbeats (service_name, timestamp, metadata)
+      VALUES (?, ?, ?)
+      ON CONFLICT(service_name) DO UPDATE SET
+        timestamp = excluded.timestamp,
+        metadata = excluded.metadata
+    `).run(serviceName, Date.now(), JSON.stringify(metadata));
+  } catch (err) {
+    // Fallback for legacy schemas or weird constraint issues
+    db.prepare(`
+      INSERT OR REPLACE INTO service_heartbeats (service_name, timestamp, metadata)
+      VALUES (?, ?, ?)
+    `).run(serviceName, Date.now(), JSON.stringify(metadata));
+  }
 }
 
 export function getDatabaseSize() {
