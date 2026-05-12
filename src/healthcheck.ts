@@ -27,20 +27,20 @@ try {
 
   db.close();
 
-  if (!row) {
-    console.error(`[Healthcheck] No heartbeat found for service: ${service}`);
-    process.exit(1);
-  }
+  if (row) {
+    const now = Date.now();
+    const ageMs = now - row.timestamp;
+    const twoMinutesMs = 2 * 60 * 1000;
 
-  const now = Date.now();
-  const ageMs = now - row.timestamp;
-  const twoMinutesMs = 2 * 60 * 1000;
-
-  if (ageMs < twoMinutesMs) {
-    console.log(`[Healthcheck] Service ${service} is healthy (Last heartbeat: ${Math.round(ageMs/1000)}s ago)`);
-    process.exit(0);
+    if (ageMs < twoMinutesMs) {
+      console.log(`[Healthcheck] Service ${service} is healthy (Last heartbeat: ${Math.round(ageMs/1000)}s ago)`);
+      process.exit(0);
+    } else {
+      console.error(`[Healthcheck] Service ${service} is UNHEALTHY! Last heartbeat was ${Math.round(ageMs/1000)}s ago (Limit: 120s)`);
+      process.exit(1);
+    }
   } else {
-    console.error(`[Healthcheck] Service ${service} is unhealthy (Last heartbeat: ${Math.round(ageMs/1000)}s ago)`);
+    console.error(`[Healthcheck] Service ${service} is UNHEALTHY! No heartbeat found in service_heartbeats table.`);
     process.exit(1);
   }
 } catch (err) {
