@@ -433,7 +433,152 @@ export function getLiveOrdersBulk(productIds: string[]) {
   return result;
 }
 export function getStatusStats() {
-  return { database: {}, market: {}, uptime: {} }; 
+  const getTableStats = (table: string) => {
+    try {
+      const stats = db.prepare(`SELECT COUNT(*) as count, MIN(timestamp) as oldest, MAX(timestamp) as newest FROM ${table}`).get() as any;
+      return { rows: stats.count || 0, oldestTimestamp: stats.oldest, newestTimestamp: stats.newest };
+    } catch {
+      return { rows: 0, oldestTimestamp: null, newestTimestamp: null };
+    }
+  };
+
+  const getCount = (table: string) => {
+    try {
+      return (db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get() as any).count || 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  // Market stats
+  let marketStats = {
+    totalProducts: 0,
+    totalBuyVolume: 0,
+    totalSellVolume: 0,
+    totalBuyOrders: 0,
+    totalSellOrders: 0,
+    positiveMarginItems: 0,
+    negativeMarginItems: 0,
+    averageMargin: 0,
+    estimatedMarketCap: 0,
+    topMarginProduct: { productId: 'N/A', margin: 0 },
+    topVolumeProduct: { productId: 'N/A', volume: 0 },
+    marketVolatility: 1.5, // Mocked for now
+    totalMarketDepth: 0,
+    topFlip: { productId: 'N/A', percentage: 0 }
+  };
+
+  try {
+    const productsList = db.prepare(`
+      SELECT p.product_id, b.buy_price, b.sell_price, b.buy_volume, b.sell_volume, b.buy_orders, b.sell_orders 
+      FROM products p
+      LEFT JOIN bazaar_prices b ON p.product_id = b.product_id
+      WHERE b.timestamp = (SELECT MAX(timestamp) FROM bazaar_prices WHERE product_id = p.product_id)
+    `).all() as any[];
+
+    marketStats.totalProducts = productsList.length;
+    let totalMargin = 0;
+    let productsWithPrice = 0;
+
+    productsList.forEach(p => {
+      if (p.buy_price && p.sell_price) {
+        const margin = p.sell_price - p.buy_price;
+        const marginPct = (margin / p.sell_price) * 100;
+        
+        marketStats.totalBuyVolume += p.buy_volume || 0;
+        marketStats.totalSellVolume += p.sell_volume || 0;
+        marketStats.totalBuyOrders += p.buy_orders || 0;
+        marketStats.totalSellOrders += p.sell_orders || 0;
+        marketStats.estimatedMarketCap += (p.buy_price * (p.buy_volume || 0));
+
+        if (margin > 0) marketStats.positiveMarginItems++;
+        else marketStats.negativeMarginItems++;
+
+        totalMargin += margin;
+        productsWithPrice++;
+
+        if (margin > marketStats.topMarginProduct.margin) {
+          marketStats.topMarginProduct = { productId: p.product_id, margin };
+        }
+        if ((p.buy_volume || 0) > marketStats.topVolumeProduct.volume) {
+          marketStats.topVolumeProduct = { productId: p.product_id, volume: p.buy_volume };
+        }
+        if (marginPct > marketStats.topFlip.percentage && marginPct < 100) {
+           marketStats.topFlip = { productId: p.product_id, percentage: parseFloat(marginPct.toFixed(2)) };
+        }
+      }
+    });
+
+    marketStats.averageMargin = productsWithPrice > 0 ? Math.round(totalMargin / productsWithPrice) : 0;
+    marketStats.totalMarketDepth = marketStats.totalBuyOrders + marketStats.totalSellOrders;
+  } catch (err) {
+    console.error('[DB] Error calculating market stats:', err);
+  }
+
+  // Database size (approximate)
+  let sizeMB = 0;
+  let pageCount = 0;
+  let pageSize = 0;
+  try {
+    pageCount = (db.prepare('PRAGMA page_count').get() as any).page_count;
+    pageSize = (db.prepare('PRAGMA page_size').get() as any).page_size;
+    sizeMB = (pageCount * pageSize) / (1024 * 1024);
+  } catch {}
+
+  // Uptime & Heartbeats
+  const heartbeats: any = { tracker: null, api: null, downsampler: null };
+  const history: any = { tracker: [], api: [], downsampler: [] };
+  
+  try {
+    const lastHB = db.prepare('SELECT service_id, timestamp FROM service_heartbeats GROUP BY service_id HAVING timestamp = MAX(timestamp)').all() as any[];
+    lastHB.forEach(hb => {
+      if (heartbeats[hb.service_id] !== undefined) {
+        heartbeats[hb.service_id] = hb.timestamp;
+      }
+    });
+
+    // Mock history for now (Status.tsx expects an array of UptimePoint)
+    const mockPoint = (status: 'operational') => ({
+       date: new Date().toISOString().split('T')[0],
+       uptimePct: 100,
+       status: status
+    });
+    
+    ['tracker', 'api', 'downsampler'].forEach(id => {
+       // Generate last 30 points
+       for(let i=0; i<30; i++) {
+         history[id].push(mockPoint('operational'));
+       }
+    });
+  } catch {}
+
+  return {
+    database: {
+      sizeBytes: pageCount * pageSize,
+      sizeMB: parseFloat(sizeMB.toFixed(2)),
+      pageCount,
+      pageSize,
+      tables: {
+        prices: getTableStats('bazaar_prices'),
+        one_min_prices: getTableStats('one_min_prices'),
+        five_min_prices: getTableStats('five_min_prices'),
+        ten_min_prices: getTableStats('ten_min_prices'),
+        thirty_min_prices: getTableStats('thirty_min_prices'),
+        hourly_prices: getTableStats('hourly_prices'),
+        daily_prices: getTableStats('daily_prices'),
+        products: { rows: getCount('products') },
+        live_orders: { rows: getCount('live_orders') }
+      }
+    },
+    market: marketStats,
+    uptime: {
+      serverStartedAt: Date.now() - (process.uptime() * 1000),
+      uptimeMs: Math.round(process.uptime() * 1000),
+      lastHeartbeats: heartbeats,
+      history: history
+    },
+    timestamp: Date.now()
+  };
 }
 export function getMayorsInRange(start: number, end: number) {
   return db.prepare('SELECT * FROM mayors WHERE timestamp >= ? AND timestamp <= ?').all(start, end);

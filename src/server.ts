@@ -18,8 +18,7 @@ import {
   getStatusStats,
   getMayorsInRange,
   getVolumeHistory,
-  logHeartbeat,
-  db
+  logHeartbeat
 } from './db';
 import { notifyError, notifySuccess } from './discord';
 
@@ -250,17 +249,7 @@ app.get('/api/jacobs', async (req, res) => {
   }
 });
 
-// Debug endpoint
-app.get('/api/debug/db', (req, res) => {
-  try {
-    const q = req.query.q as string;
-    if (!q) return res.json({ error: 'No query provided' });
-    const result = db.prepare(q).all();
-    res.json({ success: true, result });
-  } catch (err) {
-    res.json({ success: false, error: (err as Error).message });
-  }
-});
+// Removed debug endpoint for production security
 
 const PORT = process.env.PORT || 3000;
 // Start the server
