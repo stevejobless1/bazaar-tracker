@@ -88,6 +88,21 @@ export function initDB() {
     )
   `).run();
 
+  // Migration: ensure products table has all columns
+  const prodColumns = db.prepare("PRAGMA table_info(products)").all() as any[];
+  if (!prodColumns.find(c => c.name === 'name')) {
+    console.log('[DB] Migrating products: adding name column');
+    db.prepare("ALTER TABLE products ADD COLUMN name TEXT").run();
+  }
+  if (!prodColumns.find(c => c.name === 'category')) {
+    console.log('[DB] Migrating products: adding category column');
+    db.prepare("ALTER TABLE products ADD COLUMN category TEXT").run();
+  }
+  if (!prodColumns.find(c => c.name === 'last_updated')) {
+    console.log('[DB] Migrating products: adding last_updated column');
+    db.prepare("ALTER TABLE products ADD COLUMN last_updated INTEGER").run();
+  }
+
   // Bazaar prices table
   db.prepare(`
     CREATE TABLE IF NOT EXISTS bazaar_prices (
