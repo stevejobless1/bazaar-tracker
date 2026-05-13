@@ -250,9 +250,21 @@ app.get('/api/jacobs', async (req, res) => {
   }
 });
 
+// Debug endpoint
+app.get('/api/debug/db', (req, res) => {
+  try {
+    const q = req.query.q as string;
+    if (!q) return res.json({ error: 'No query provided' });
+    const result = db.prepare(q).all();
+    res.json({ success: true, result });
+  } catch (err) {
+    res.json({ success: false, error: (err as Error).message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// Start the server
+const server = app.listen(PORT, () => {
   console.log(`[Server] Bazaar API Backbone running on port ${PORT}`);
   
   notifySuccess('api', 'API Server Started', `Listening on port ${PORT}`);
