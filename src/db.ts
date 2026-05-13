@@ -125,6 +125,15 @@ export function initDB() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON bazaar_prices(timestamp)').run();
 
   // Volume history table
+  const volumeHistoryInfo = db.prepare("PRAGMA table_info(volume_history)").all() as any[];
+  if (volumeHistoryInfo.length > 0) {
+    const pidCol = volumeHistoryInfo.find(c => c.name === 'product_id');
+    if (pidCol && pidCol.type === 'INTEGER') {
+      console.log('[DB] Migrating volume_history: dropping old schema table');
+      db.exec("DROP TABLE volume_history");
+    }
+  }
+
   db.prepare(`
     CREATE TABLE IF NOT EXISTS volume_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +158,18 @@ export function initDB() {
   `).run();
 
   // Live order summaries table
+  const liveOrdersInfo = db.prepare("PRAGMA table_info(live_orders)").all() as any[];
+  if (liveOrdersInfo.length > 0) {
+    const pidCol = liveOrdersInfo.find(c => c.name === 'product_id');
+    const hasUpdatedAt = liveOrdersInfo.find(c => c.name === 'updated_at');
+    
+    // If it's an old schema (INTEGER product_id or missing updated_at), drop it
+    if (pidCol && pidCol.type === 'INTEGER' || !hasUpdatedAt) {
+      console.log('[DB] Migrating live_orders: dropping old schema table');
+      db.exec("DROP TABLE live_orders");
+    }
+  }
+
   db.prepare(`
     CREATE TABLE IF NOT EXISTS live_orders (
       product_id TEXT PRIMARY KEY,
