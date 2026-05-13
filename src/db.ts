@@ -472,8 +472,12 @@ export function getStatusStats() {
     const productsList = db.prepare(`
       SELECT p.product_id, b.buy_price, b.sell_price, b.buy_volume, b.sell_volume, b.buy_orders, b.sell_orders 
       FROM products p
-      LEFT JOIN bazaar_prices b ON p.product_id = b.product_id
-      WHERE b.timestamp = (SELECT MAX(timestamp) FROM bazaar_prices WHERE product_id = p.product_id)
+      LEFT JOIN bazaar_prices b ON b.id = (
+        SELECT id FROM bazaar_prices 
+        WHERE product_id = p.product_id 
+        ORDER BY timestamp DESC 
+        LIMIT 1
+      )
     `).all() as any[];
 
     marketStats.totalProducts = productsList.length;
@@ -530,10 +534,10 @@ export function getStatusStats() {
   const history: any = { tracker: [], api: [], downsampler: [] };
   
   try {
-    const lastHB = db.prepare('SELECT service_id, timestamp FROM service_heartbeats GROUP BY service_id HAVING timestamp = MAX(timestamp)').all() as any[];
+    const lastHB = db.prepare('SELECT service_name, timestamp FROM service_heartbeats').all() as any[];
     lastHB.forEach(hb => {
-      if (heartbeats[hb.service_id] !== undefined) {
-        heartbeats[hb.service_id] = hb.timestamp;
+      if (heartbeats[hb.service_name] !== undefined) {
+        heartbeats[hb.service_name] = hb.timestamp;
       }
     });
 
